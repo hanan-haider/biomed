@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from biomedclip_model import create_model
 
 warnings.filterwarnings("ignore")
 
