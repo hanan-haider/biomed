@@ -13,6 +13,8 @@ from Model.adapter import BiomedCLIP_Inplanted
 from dataset.medical_few import MedDataset
 from utils import augment, cos_sim, encode_text_with_prompt_ensemble
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 warnings.filterwarnings("ignore")
 
