@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+import kornia as K
+
 from transformers import AutoTokenizer
 
 # Initialize tokenizer (do this once, globally)
