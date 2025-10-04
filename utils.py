@@ -1,51 +1,98 @@
-
 import numpy as np
 import torch
 import torch.nn.functional as F
-import kornia as K
-from PIL import Image
-# ADD THIS before training loop
 from transformers import AutoTokenizer
 
-# Load BiomedBERT tokenizer (not CLIP tokenizer)
+# Initialize tokenizer (do this once, globally)
 tokenizer = AutoTokenizer.from_pretrained(
     "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract"
 )
 
-
 def encode_text_with_prompt_ensemble(model, obj, device):
-    prompt_normal = ['{}', 'flawless {}', 'perfect {}', 'unblemished {}', '{} without flaw', '{} without defect', '{} without damage']
-    prompt_abnormal = ['damaged {}', 'broken {}', '{} with flaw', '{} with defect', '{} with damage']
-    prompt_state = [prompt_normal, prompt_abnormal]
-    prompt_templates = ['a bad photo of a {}.', 'a low resolution photo of the {}.', 'a bad photo of the {}.', 'a cropped photo of the {}.', 'a bright photo of a {}.', 'a dark photo of the {}.', 'a photo of my {}.', 'a photo of the cool {}.', 'a close-up photo of a {}.', 'a black and white photo of the {}.', 'a bright photo of the {}.', 'a cropped photo of a {}.', 'a jpeg corrupted photo of a {}.', 'a blurry photo of the {}.', 'a photo of the {}.', 'a good photo of the {}.', 'a photo of one {}.', 'a close-up photo of the {}.', 'a photo of a {}.', 'a low resolution photo of a {}.', 'a photo of a large {}.', 'a blurry photo of a {}.', 'a jpeg corrupted photo of the {}.', 'a good photo of a {}.', 'a photo of the small {}.', 'a photo of the large {}.', 'a black and white photo of a {}.', 'a dark photo of a {}.', 'a photo of a cool {}.', 'a photo of a small {}.', 'there is a {} in the scene.', 'there is the {} in the scene.', 'this is a {} in the scene.', 'this is the {} in the scene.', 'this is one {} in the scene.']
+    print("\n=== Starting encode_text_with_prompt_ensemble ===")
+    print(f"Object to encode: {obj}")
+    print(f"Using device: {device}")
 
+    prompt_normal = ['{}', 'flawless {}', 'perfect {}', 'unblemished {}', 
+                     '{} without flaw', '{} without defect', '{} without damage']
+    prompt_abnormal = ['damaged {}', 'broken {}', '{} with flaw', 
+                       '{} with defect', '{} with damage']
+    prompt_state = [prompt_normal, prompt_abnormal]
+    prompt_templates = ['a bad photo of a {}.', 'a low resolution photo of the {}.', 
+                        'a bad photo of the {}.', 'a cropped photo of the {}.', 
+                        'a bright photo of a {}.', 'a dark photo of the {}.', 
+                        'a photo of my {}.', 'a photo of the cool {}.', 
+                        'a close-up photo of a {}.', 'a black and white photo of the {}.', 
+                        'a bright photo of the {}.', 'a cropped photo of a {}.', 
+                        'a jpeg corrupted photo of a {}.', 'a blurry photo of the {}.', 
+                        'a photo of the {}.', 'a good photo of the {}.', 
+                        'a photo of one {}.', 'a close-up photo of the {}.', 
+                        'a photo of a {}.', 'a low resolution photo of a {}.', 
+                        'a photo of a large {}.', 'a blurry photo of a {}.', 
+                        'a jpeg corrupted photo of the {}.', 'a good photo of a {}.', 
+                        'a photo of the small {}.', 'a photo of the large {}.', 
+                        'a black and white photo of a {}.', 'a dark photo of a {}.', 
+                        'a photo of a cool {}.', 'a photo of a small {}.', 
+                        'there is a {} in the scene.', 'there is the {} in the scene.', 
+                        'this is a {} in the scene.', 'this is the {} in the scene.', 
+                        'this is one {} in the scene.']
+     
     text_features = []
     for i in range(len(prompt_state)):
+        print(f"\n--- Processing prompt set {i + 1}/{len(prompt_state)} ---")
+
         prompted_state = [state.format(obj) for state in prompt_state[i]]
+        print(f"Prompted state examples ({len(prompted_state)}): {prompted_state[:3]} ...")
+
         prompted_sentence = []
         for s in prompted_state:
             for template in prompt_templates:
                 prompted_sentence.append(template.format(s))
+        print(f"Total prompted sentences generated: {len(prompted_sentence)}")
+        print(f"Example sentences: {prompted_sentence[:3]} ...")
 
-        # Tokenize with BiomedBERT (context_length=256, not 77)
+        # Tokenize with BiomedBERT
         text_tokens = tokenizer(
-                             prompted_sentence,
-                             padding='max_length',
-                             max_length=256,  # BiomedCLIP uses 256
-                            truncation=True,
-                            return_tensors='pt'
-                                                ).to(device)
+            prompted_sentence,
+            padding='max_length',
+            max_length=256,
+            truncation=True,
+            return_tensors='pt'
+        )
+        print(f"Tokenization complete. Input tensor shapes:")
+        print(f"  input_ids: {text_tokens['input_ids'].shape}")
+        print(f"  attention_mask: {text_tokens['attention_mask'].shape}")
 
-        #prompted_sentence = tokenizer(prompted_sentence).to(device)
+        # Move to device
+        input_ids = text_tokens['input_ids'].to(device)
+        attention_mask = text_tokens['attention_mask'].to(device)
+        print("Moved tokenized data to device.")
 
-        class_embeddings = model.clipmodel.encode_text(text_tokens)
-        class_embeddings /= class_embeddings.norm(dim=-1, keepdim=True)
+        # Encode text with BiomedCLIP
+        with torch.no_grad():
+            print("Encoding text using BiomedCLIP text tower...")
+            class_embeddings = model.clipmodel.text(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
+        print(f"Raw class_embeddings shape: {class_embeddings.shape}")
+
+        # Normalize
+        class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+        print("Normalized class_embeddings.")
+
+        # Mean pooling across all sentences
         class_embedding = class_embeddings.mean(dim=0)
-        class_embedding /= class_embedding.norm()
-        text_features.append(class_embedding)
-    text_features = torch.stack(text_features, dim=1).to(device)
-    return text_features
+        class_embedding = class_embedding / class_embedding.norm()
+        print(f"Final class_embedding shape (after mean pooling): {class_embedding.shape}")
 
+        text_features.append(class_embedding)
+
+    # Stack normal and abnormal embeddings
+    text_features = torch.stack(text_features, dim=1).to(device)
+    print(f"\nFinal stacked text_features shape: {text_features.shape}")
+    print("=== Encoding complete ===\n")
+    return text_features
 
 
 
