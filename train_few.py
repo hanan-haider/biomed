@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from Model.biomedclip import create_model
 from Model.transformer import TimmModel , HFTextEncoder
-from Model.adapters import BiomedClipAdapter
+from Model.adapter import BiomedClipAdapter
 from dataset.medical_few import MedDataset
 
 
