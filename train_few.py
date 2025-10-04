@@ -14,6 +14,7 @@ from dataset.medical_few import MedDataset
 from utils import augment, cos_sim, encode_text_with_prompt_ensemble
 from sklearn.metrics import roc_auc_score, precision_recall_curve, pairwise
 from loss import FocalLoss, BinaryDiceLoss
+from prompt import REAL_NAME
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
