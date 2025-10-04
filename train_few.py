@@ -94,7 +94,7 @@ def main():
                               pretrained=args.pretrain, require_pretrained=True)
     biomedclip_model.eval()
 
-    model = BiomedCLIP_Inplanted(clip_model=biomedclip_model, features=args.features_list).to(device)
+    model = BiomedCLIP_Inplanted(biomedclip_model=biomedclip_model, features=args.features_list).to(device)
     model.eval()
 
     # make sure adapter params require grad (we'll optimize adapters)
