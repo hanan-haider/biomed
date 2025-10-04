@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 # from your local BiomedCLIP model code
-#from .model import CLIP, convert_weights_to_lp, resize_pos_embed, get_cast_dtype
+from .model import CLIP, convert_weights_to_lp, resize_pos_embed, get_cast_dtype
 
 
 # Paths for configs and checkpoints
@@ -80,48 +80,6 @@ def load_state_dict(checkpoint_path: str, map_location="cpu"):
 
 
 
-def resize_pos_embed(state_dict, model, interpolation: str = 'bicubic', antialias: bool = True):
-    # Rescale the grid of position embeddings when loading from state_dict
-    old_pos_embed = state_dict.get('visual.positional_embedding', None)
-    if old_pos_embed is None or not hasattr(model.visual, 'grid_size'):
-        return
-
-    grid_size = to_2tuple(model.visual.grid_size)
-    extra_tokens = 1  # assumes CLS token exists
-    new_seq_len = grid_size[0] * grid_size[1] + extra_tokens
-
-    # If already correct length, nothing to do
-    if new_seq_len == old_pos_embed.shape[0]:
-        return
-
-    if extra_tokens:
-        pos_emb_tok, pos_emb_img = old_pos_embed[:extra_tokens], old_pos_embed[extra_tokens:]
-    else:
-        pos_emb_tok, pos_emb_img = None, old_pos_embed
-
-    old_grid_size = to_2tuple(int(math.sqrt(len(pos_emb_img))))
-
-    logging.info(f"Resizing position embedding grid-size from {old_grid_size} → {grid_size}")
-
-    pos_emb_img = pos_emb_img.reshape(1, old_grid_size[0], old_grid_size[1], -1).permute(0, 3, 1, 2)
-
-    pos_emb_img = F.interpolate(
-        pos_emb_img,
-        size=grid_size,
-        mode=interpolation,
-        antialias=antialias,
-    )
-
-    pos_emb_img = pos_emb_img.permute(0, 2, 3, 1).reshape(1, grid_size[0] * grid_size[1], -1)[0]
-
-    if pos_emb_tok is not None:
-        new_pos_embed = torch.cat([pos_emb_tok, pos_emb_img], dim=0)
-    else:
-        new_pos_embed = pos_emb_img
-
-    state_dict['visual.positional_embedding'] = new_pos_embed
-
-
 
 def load_checkpoint(model, checkpoint_path, strict=True):
     state_dict = load_state_dict(checkpoint_path)
@@ -141,13 +99,7 @@ def load_checkpoint(model, checkpoint_path, strict=True):
     incompatible_keys = model.load_state_dict(new_state_dict, strict=False)  # keep non-strict
     return incompatible_keys
 
-def get_cast_dtype(precision: str):
-    cast_dtype = None
-    if precision == 'bf16':
-        cast_dtype = torch.bfloat16
-    elif precision == 'fp16':
-        cast_dtype = torch.float16
-    return cast_dtype
+
 
 
 
