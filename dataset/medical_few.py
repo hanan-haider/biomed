@@ -33,6 +33,7 @@ class MedDataset(Dataset):
 
         # load dataset
         self.x, self.y, self.mask = self.load_dataset_folder(self.seg_flag)
+        print("\n\n")
         print("Total image(good + ungood):",len(self.x))
         print("Total Label[0(normal), 1(abnormal)]:",len(self.y))
         print("Total mask flag > 0, [None(normal),mask(anomaly mask):",len(self.mask))
