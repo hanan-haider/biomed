@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from Model.biomedclip import create_model
 from Model.transformer import TimmModel , HFTextEncoder
-from Model.adapter import BiomedClipAdapter
+from Model.adapter import BiomedCLIP_Inplanted
 from dataset.medical_few import MedDataset
 
 
@@ -94,7 +94,7 @@ def main():
                               pretrained=args.pretrain, require_pretrained=True)
     biomedclip_model.eval()
 
-    model = BiomedClipAdapter(clip_model=biomedclip_model, features=args.features_list).to(device)
+    model = BiomedCLIP_Inplanted(clip_model=biomedclip_model, features=args.features_list).to(device)
     model.eval()
 
     # make sure adapter params require grad (we'll optimize adapters)
