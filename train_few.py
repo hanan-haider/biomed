@@ -86,9 +86,9 @@ def main():
     # REAL_NAME, FocalLoss, BinaryDiceLoss, cos_sim must be available in the environment.
 
     # fixed feature extractor (clip_model)
-    clip_model = create_model(model_name=args.model_name, img_size=args.img_size, device=device,
+    biomedclip_model = create_model(model_name=args.model_name, img_size=args.img_size, device=device,
                               pretrained=args.pretrain, require_pretrained=True)
-    clip_model.eval()
+    biomedclip_model.eval()
 
     model = CLIP_Inplanted(clip_model=clip_model, features=args.features_list).to(device)
     model.eval()
