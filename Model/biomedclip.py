@@ -9,7 +9,8 @@ import torch
 import torch.nn as nn
 
 # from your local BiomedCLIP model code
-from .model import resize_pos_embed, get_cast_dtype, CustomTextCLIP , TimmModel , HFTextEncoder
+from .model import resize_pos_embed, get_cast_dtype, CustomTextCLIP 
+from .transformer import TimmModel , HFTextEncoder
 
 #CLIP, convert_weights_to_lp, 
 
