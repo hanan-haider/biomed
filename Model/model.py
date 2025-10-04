@@ -3,6 +3,8 @@ from typing import Union, Tuple, Optional, Dict, Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .transformers import TimmModel, HFTextEncoder, TextTransformer
+import numpy as np
 
 # Import from local modules (commented out as requested)
 # from .model import VisionTransformer, LayerNormFp32, LayerNorm, QuickGELU
