@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from Model.biomedclip import create_model
+from .transformer import TimmModel , HFTextEncoder
 
 warnings.filterwarnings("ignore")
 
