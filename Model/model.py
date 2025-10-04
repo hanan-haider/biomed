@@ -3,7 +3,7 @@ from typing import Union, Tuple, Optional, Dict, Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .transformers import TimmModel, HFTextEncoder
+from .transformer import TimmModel, HFTextEncoder
 
 import numpy as np
 
