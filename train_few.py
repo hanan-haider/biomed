@@ -32,31 +32,34 @@ def setup_seed(seed):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='BiomedCLIP Few-shot / Zero-shot Testing')
+    parser = argparse.ArgumentParser(description='BiomedCLIP Testing')
 
-    # Model / checkpoint / dataset
-    parser.add_argument('--model_name', type=str, default='ViT-L-14-336',
-                        help="Model name (e.g. ViT-B-16-plus-240, ViT-L-14-336, BiomedCLIP variant)")
-    parser.add_argument('--text_encoder', type=str,
+    # BiomedCLIP-specific defaults
+    parser.add_argument('--model_name', type=str, default='BiomedCLIP-PubMedBERT-ViT-B-16', 
+                        help="BiomedCLIP model version")
+    parser.add_argument('--text_encoder', type=str, 
                         default='microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext',
-                        help="Text encoder used for BiomedCLIP (if applicable)")
-    parser.add_argument('--pretrain', type=str, default='openai', help="pretrain source (laion400m, openai, microsoft, ...)")
-    parser.add_argument('--obj', type=str, default='Liver', help="Dataset object/class key from CLASS_INDEX")
-    parser.add_argument('--data_path', type=str, default='./data/', help="Path to dataset")
-    parser.add_argument('--batch_size', type=int, default=1)
+                        help="Text encoder used for BiomedCLIP")
+    parser.add_argument('--pretrain', type=str, default='microsoft',
+                        help="pretrained checkpoint source")
+    parser.add_argument('--obj', type=str, default='Liver')
+    parser.add_argument('--data_path', type=str, default='/kaggle/input/preprocessed/Liver',
+                        help="path to dataset")   
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--save_model', type=int, default=1)
     parser.add_argument('--save_path', type=str, default='./ckpt/few-shot/')
-    parser.add_argument('--img_size', type=int, default=240)
-    parser.add_argument('--epoch', type=int, default=50, help="Number of epochs")
-    parser.add_argument('--learning_rate', type=float, default=0.001, help="Learning rate")
-    parser.add_argument('--features_list', type=int, nargs="+", default=[6, 12, 18, 24], help="Features/layers used for adapters")
+    parser.add_argument('--img_size', type=int, default=224, 
+                        help="BiomedCLIP trained with 224x224 resolution")
+    parser.add_argument("--epoch", type=int, default=50, help="epochs")
+    parser.add_argument("--learning_rate", type=float, default=0.001, help="learning rate")
+    parser.add_argument("--features_list", type=int, nargs="+", default=[3, 6, 9, 12], 
+                        help="layer features used for adapters")  
     parser.add_argument('--seed', type=int, default=111)
-    parser.add_argument('--shot', type=int, default=4, help="Few-shot shots")
-    parser.add_argument('--iterate', type=int, default=0, help="Iteration index for few-shot split")
-    parser.add_argument('--num_workers', type=int, default=4, help="Number of DataLoader workers")
-    parser.add_argument('--pin_memory', action='store_true', help="Pin memory for DataLoader (useful when CUDA enabled)")
-
+    parser.add_argument('--shot', type=int, default=4)
+    parser.add_argument('--iterate', type=int, default=0)
+  
     args, _ = parser.parse_known_args()
+
     return args
 
 
