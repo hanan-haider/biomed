@@ -67,30 +67,6 @@ def parse_args():
     parser.add_argument('--shot', type=int, default=4)
     parser.add_argument('--iterate', type=int, default=0)
 
-    # BiomedCLIP-specific defaults
-    parser.add_argument('--model_name', type=str, default='BiomedCLIP-PubMedBERT-ViT-B-16', 
-                        help="BiomedCLIP model version")
-    parser.add_argument('--text_encoder', type=str, 
-                        default='microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext',
-                        help="Text encoder used for BiomedCLIP")
-    parser.add_argument('--pretrain', type=str, default='microsoft',
-                        help="pretrained checkpoint source")
-    parser.add_argument('--obj', type=str, default='Liver')
-    parser.add_argument('--data_path', type=str, default='/kaggle/input/preprocessed/Liver',
-                        help="path to dataset")   
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--save_model', type=int, default=1)
-    parser.add_argument('--save_path', type=str, default='./ckpt/few-shot/')
-    parser.add_argument('--img_size', type=int, default=224, 
-                        help="BiomedCLIP trained with 224x224 resolution")
-    parser.add_argument("--epoch", type=int, default=50, help="epochs")
-    parser.add_argument("--learning_rate", type=float, default=0.001, help="learning rate")
-    parser.add_argument("--features_list", type=int, nargs="+", default=[3, 6, 9, 12], 
-                        help="layer features used for adapters")  
-    parser.add_argument('--seed', type=int, default=111)
-    parser.add_argument('--shot', type=int, default=4)
-    parser.add_argument('--iterate', type=int, default=0)
-  
     args, _ = parser.parse_known_args()
 
     return args
