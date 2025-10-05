@@ -11,6 +11,10 @@ CLASS_NAMES = ['Brain', 'Liver', 'Retina_RESC', 'Retina_OCT2017', 'Chest', 'Hist
 CLASS_INDEX = {'Brain':3, 'Liver':2, 'Retina_RESC':1, 'Retina_OCT2017':-1, 'Chest':-2, 'Histopathology':-3}
 
 
+def is_image_file(filename):
+    """Check if file is a valid image"""
+    valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif')
+    return filename.lower().endswith(valid_extensions) and not filename.startswith('.')
 
 
 class MedDataset(Dataset):
@@ -18,11 +22,11 @@ class MedDataset(Dataset):
                  dataset_path='/data/',
                  class_name='Brain',
                  resize=240,
-                 shot = 4,
-                 iterate = -1
+                 shot=4,
+                 iterate=-1
                  ):
         assert class_name in CLASS_NAMES, 'class_name: {}, should be in {}'.format(class_name, CLASS_NAMES)
-        assert shot>0, 'shot number : {}, should be positive integer'.format(shot)
+        assert shot > 0, 'shot number : {}, should be positive integer'.format(shot)
 
         self.dataset_path = os.path.join(dataset_path, f'{class_name}_AD')
         self.resize = resize
@@ -33,29 +37,23 @@ class MedDataset(Dataset):
 
         # load dataset
         self.x, self.y, self.mask = self.load_dataset_folder(self.seg_flag)
-        print("\n\n")
-        print("Total image(good + ungood):",len(self.x))
-        print("Total Label[0(normal), 1(abnormal)]:",len(self.y))
-        print("Total mask flag > 0, [None(normal),mask(anomaly mask):",len(self.mask))
-        
-
+        print("\n")
+        print("Total image(good + ungood):", len(self.x))
+        print("Total Label[0(normal), 1(abnormal)]:", len(self.y))
+        print("Total mask flag > 0, [None(normal),mask(anomaly mask):", len(self.mask))
 
         self.transform_x = transforms.Compose([
-            transforms.Resize((resize,resize), Image.BICUBIC),
+            transforms.Resize((resize, resize), Image.BICUBIC),
             transforms.ToTensor(),
-            ])
-
+        ])
 
         self.transform_mask = transforms.Compose([
-            transforms.Resize((resize,resize), Image.NEAREST),
+            transforms.Resize((resize, resize), Image.NEAREST),
             transforms.ToTensor()
-            ])
-
+        ])
 
         self.fewshot_norm_img = self.get_few_normal()
         self.fewshot_abnorm_img, self.fewshot_abnorm_mask = self.get_few_abnormal()
-        
-            
 
     def __getitem__(self, idx):
         x, y, mask = self.x[idx], self.y[idx], self.mask[idx]
@@ -80,51 +78,70 @@ class MedDataset(Dataset):
     def load_dataset_folder(self, seg_flag):
         x, y, mask = [], [], []
 
+        # Load normal test images
         normal_img_dir = os.path.join(self.dataset_path, 'test', 'good', 'img')
-        img_fpath_list = sorted([os.path.join(normal_img_dir, f) for f in os.listdir(normal_img_dir)])
-        x.extend(img_fpath_list)
-        y.extend([0] * len(img_fpath_list))
-        mask.extend([None] * len(img_fpath_list))
-
-
-        abnormal_img_dir = os.path.join(self.dataset_path, 'test', 'Ungood', 'img')
-        img_fpath_list = sorted([os.path.join(abnormal_img_dir, f) for f in os.listdir(abnormal_img_dir)])
-        x.extend(img_fpath_list)
-        y.extend([1] * len(img_fpath_list))
-
-        if self.seg_flag > 0:
-            gt_fpath_list = [f.replace('img', 'anomaly_mask') for f in img_fpath_list]
-            mask.extend(gt_fpath_list)
-        else:
+        if os.path.exists(normal_img_dir):
+            img_fpath_list = sorted([
+                os.path.join(normal_img_dir, f) 
+                for f in os.listdir(normal_img_dir) 
+                if is_image_file(f)
+            ])
+            x.extend(img_fpath_list)
+            y.extend([0] * len(img_fpath_list))
             mask.extend([None] * len(img_fpath_list))
+            print(f"Loaded {len(img_fpath_list)} normal test images")
+
+        # Load abnormal test images
+        abnormal_img_dir = os.path.join(self.dataset_path, 'test', 'Ungood', 'img')
+        if os.path.exists(abnormal_img_dir):
+            img_fpath_list = sorted([
+                os.path.join(abnormal_img_dir, f) 
+                for f in os.listdir(abnormal_img_dir) 
+                if is_image_file(f)
+            ])
+            x.extend(img_fpath_list)
+            y.extend([1] * len(img_fpath_list))
+
+            if self.seg_flag > 0:
+                gt_fpath_list = [f.replace('img', 'anomaly_mask') for f in img_fpath_list]
+                mask.extend(gt_fpath_list)
+            else:
+                mask.extend([None] * len(img_fpath_list))
+            print(f"Loaded {len(img_fpath_list)} abnormal test images")
 
         assert len(x) == len(y), 'number of x and y should be same'
         return list(x), list(y), list(mask)
 
-
     def get_few_normal(self):
         x = []
         img_dir = os.path.join(self.dataset_path, 'valid', 'good', 'img')
-        normal_names = os.listdir(img_dir)
+        
+        # Filter only valid image files
+        normal_names = [f for f in os.listdir(img_dir) if is_image_file(f)]
+        print(f"Found {len(normal_names)} valid normal images for few-shot")
+
+        # Ensure we don't try to sample more than available
+        actual_shot = min(self.shot, len(normal_names))
+        if actual_shot < self.shot:
+            print(f"Warning: Requested {self.shot} shots but only {actual_shot} images available")
 
         # select images
         if self.iterate < 0:
-            random_choice = random.sample(normal_names, self.shot)
+            random_choice = random.sample(normal_names, actual_shot)
         else:
             random_choice = []
             with open(f'/kaggle/input/myrepository/MVFA-AD/dataset/fewshot_seed/{self.class_name}/{self.shot}-shot.txt', 'r', encoding='utf-8') as infile:
                 for line in infile:
-                    data_line = line.strip("\n").split()  # 去除首尾换行符，并按空格划分
+                    data_line = line.strip("\n").split()
                     if data_line[0] == f'n-{self.iterate}:':
                         random_choice = data_line[1:]
                         break
 
         for f in random_choice:
-            if f.endswith('.png') or f.endswith('.jpeg'):
-                x.append(os.path.join(img_dir, f))
+            x.append(os.path.join(img_dir, f))
 
         fewshot_img = []
-        for idx in range(self.shot):
+        for idx in range(len(x)):
             image = x[idx]
             image = Image.open(image).convert('RGB')
             image = self.transform_x(image)
@@ -133,45 +150,51 @@ class MedDataset(Dataset):
         fewshot_img = torch.cat(fewshot_img)
         return fewshot_img
 
-
     def get_few_abnormal(self):
         x = []
         y = []
         img_dir = os.path.join(self.dataset_path, 'valid', 'Ungood', 'img')
         mask_dir = os.path.join(self.dataset_path, 'valid', 'Ungood', 'anomaly_mask')
 
-        abnormal_names = os.listdir(img_dir)
+        # Filter only valid image files
+        abnormal_names = [f for f in os.listdir(img_dir) if is_image_file(f)]
+        print(f"Found {len(abnormal_names)} valid abnormal images for few-shot")
+
+        # Ensure we don't try to sample more than available
+        actual_shot = min(self.shot, len(abnormal_names))
+        if actual_shot < self.shot:
+            print(f"Warning: Requested {self.shot} shots but only {actual_shot} images available")
 
         # select images
         if self.iterate < 0:
-            random_choice = random.sample(abnormal_names, self.shot)
+            random_choice = random.sample(abnormal_names, actual_shot)
         else:
             random_choice = []
             with open(f'/kaggle/input/myrepository/MVFA-AD/dataset/fewshot_seed/{self.class_name}/{self.shot}-shot.txt', 'r', encoding='utf-8') as infile:
                 for line in infile:
-                    data_line = line.strip("\n").split()  # 去除首尾换行符，并按空格划分
+                    data_line = line.strip("\n").split()
                     if data_line[0] == f'a-{self.iterate}:':
                         random_choice = data_line[1:]
                         break
 
         for f in random_choice:
-            if f.endswith('.png') or f.endswith('.jpeg'):
-                x.append(os.path.join(img_dir, f))
-                y.append(os.path.join(mask_dir, f))
+            x.append(os.path.join(img_dir, f))
+            y.append(os.path.join(mask_dir, f))
 
         fewshot_img = []
         fewshot_mask = []
-        for idx in range(self.shot):
+        for idx in range(len(x)):
             image = x[idx]
             image = Image.open(image).convert('RGB')
             image = self.transform_x(image)
             fewshot_img.append(image.unsqueeze(0))
 
             if CLASS_INDEX[self.class_name] > 0:
-                image = y[idx]
-                image = Image.open(image).convert('L')
-                image = self.transform_mask(image)
-                fewshot_mask.append(image.unsqueeze(0))
+                mask_path = y[idx]
+                if os.path.exists(mask_path):
+                    mask_image = Image.open(mask_path).convert('L')
+                    mask_image = self.transform_mask(mask_image)
+                    fewshot_mask.append(mask_image.unsqueeze(0))
 
         fewshot_img = torch.cat(fewshot_img)
 
