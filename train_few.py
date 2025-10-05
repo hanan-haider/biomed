@@ -54,6 +54,8 @@ def parse_args():
     parser.add_argument('--obj', type=str, default='Liver')
     parser.add_argument('--data_path', type=str, default='./data/',
                         help="path to dataset"  )
+    #parser.add_argument('--data_path', type=str, default='/kaggle/input/preprocessed/Liver')
+
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--save_model', type=int, default=1)
     parser.add_argument('--save_path', type=str, default='./ckpt/few-shot/')
@@ -66,7 +68,6 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=111)
     parser.add_argument('--shot', type=int, default=4)
     parser.add_argument('--iterate', type=int, default=0)
-
     args, _ = parser.parse_known_args()
 
     return args
@@ -227,14 +228,13 @@ def main():
                             'det_adapters': model.det_adapters.state_dict()},
                            ckp_path)
 
-
 def test(args, model, test_loader, text_features, seg_mem_features, det_mem_features):
     gt_list = []
     gt_mask_list = []
 
     det_image_scores_zero = []
     det_image_scores_few = []
-
+    
     seg_score_map_zero = []
     seg_score_map_few = []
 
@@ -251,11 +251,11 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 # few-shot, seg head
                 anomaly_maps_few_shot = []
                 for idx, p in enumerate(seg_patch_tokens):
-                    cos = cos_sim(seg_mem_features[idx], p)  # user-provided cos_sim
+                    cos = cos_sim(seg_mem_features[idx], p)
                     height = int(np.sqrt(cos.shape[1]))
                     anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
                     anomaly_map_few_shot = F.interpolate(torch.tensor(anomaly_map_few_shot),
-                                                         size=args.img_size, mode='bilinear', align_corners=True)
+                                                            size=args.img_size, mode='bilinear', align_corners=True)
                     anomaly_maps_few_shot.append(anomaly_map_few_shot[0].cpu().numpy())
                 score_map_few = np.sum(anomaly_maps_few_shot, axis=0)
                 seg_score_map_few.append(score_map_few)
@@ -282,14 +282,14 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                     height = int(np.sqrt(cos.shape[1]))
                     anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
                     anomaly_map_few_shot = F.interpolate(torch.tensor(anomaly_map_few_shot),
-                                                         size=args.img_size, mode='bilinear', align_corners=True)
+                                                            size=args.img_size, mode='bilinear', align_corners=True)
                     anomaly_maps_few_shot.append(anomaly_map_few_shot[0].cpu().numpy())
                 anomaly_map_few_shot = np.sum(anomaly_maps_few_shot, axis=0)
                 score_few_det = anomaly_map_few_shot.mean()
                 det_image_scores_few.append(score_few_det)
 
                 # zero-shot, det head
-                anomaly_score = 0.0
+                anomaly_score = 0
                 for layer in range(len(det_patch_tokens)):
                     det_patch_tokens[layer] /= det_patch_tokens[layer].norm(dim=-1, keepdim=True)
                     anomaly_map = (100.0 * det_patch_tokens[layer] @ text_features).unsqueeze(0)
@@ -297,33 +297,47 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                     anomaly_score += anomaly_map.mean()
                 det_image_scores_zero.append(anomaly_score.cpu().numpy())
 
-            gt_mask_list.append(mask.squeeze().cpu().detach().numpy())
+            # ✅ FIX: Squeeze and ensure consistent shape before appending
+            mask_np = mask.squeeze().cpu().detach().numpy()
+            # Ensure it's 2D (H, W) not 3D or other shapes
+            if mask_np.ndim > 2:
+                mask_np = mask_np[0]  # Take first element if batch dimension remains
+            gt_mask_list.append(mask_np)
             gt_list.extend(y.cpu().detach().numpy())
 
     gt_list = np.array(gt_list)
-    gt_mask_list = np.asarray(gt_mask_list)
+    
+    # ✅ FIX: Stack masks properly - handle potential shape mismatches
+    try:
+        gt_mask_list = np.stack(gt_mask_list, axis=0)
+    except ValueError:
+        # If shapes are still inconsistent, print debug info
+        print(f"Warning: Inconsistent mask shapes detected")
+        shapes = [m.shape for m in gt_mask_list]
+        print(f"Mask shapes: {set(shapes)}")
+        # Resize all masks to the same size
+        target_shape = (args.img_size, args.img_size)
+        gt_mask_list_resized = []
+        for mask in gt_mask_list:
+            if mask.shape != target_shape:
+                from scipy.ndimage import zoom
+                zoom_factors = (target_shape[0]/mask.shape[0], target_shape[1]/mask.shape[1])
+                mask = zoom(mask, zoom_factors, order=0)
+            gt_mask_list_resized.append(mask)
+        gt_mask_list = np.stack(gt_mask_list_resized, axis=0)
+    
     gt_mask_list = (gt_mask_list > 0).astype(np.int_)
-
-    from sklearn.metrics import roc_auc_score  # local import so script doesn't fail early if sklearn missing
 
     if CLASS_INDEX[args.obj] > 0:
         seg_score_map_zero = np.array(seg_score_map_zero)
         seg_score_map_few = np.array(seg_score_map_few)
 
-        # normalize maps (avoid division by zero)
-        if seg_score_map_zero.max() > seg_score_map_zero.min():
-            seg_score_map_zero = (seg_score_map_zero - seg_score_map_zero.min()) / (seg_score_map_zero.max() - seg_score_map_zero.min())
-        else:
-            seg_score_map_zero = np.zeros_like(seg_score_map_zero)
-
-        if seg_score_map_few.max() > seg_score_map_few.min():
-            seg_score_map_few = (seg_score_map_few - seg_score_map_few.min()) / (seg_score_map_few.max() - seg_score_map_few.min())
-        else:
-            seg_score_map_few = np.zeros_like(seg_score_map_few)
-
+        seg_score_map_zero = (seg_score_map_zero - seg_score_map_zero.min()) / (seg_score_map_zero.max() - seg_score_map_zero.min())
+        seg_score_map_few = (seg_score_map_few - seg_score_map_few.min()) / (seg_score_map_few.max() - seg_score_map_few.min())
+    
         segment_scores = 0.5 * seg_score_map_zero + 0.5 * seg_score_map_few
         seg_roc_auc = roc_auc_score(gt_mask_list.flatten(), segment_scores.flatten())
-        print(f'{args.obj} pAUC : {round(seg_roc_auc, 4)}')
+        print(f'{args.obj} pAUC : {round(seg_roc_auc,4)}')
 
         segment_scores_flatten = segment_scores.reshape(segment_scores.shape[0], -1)
         roc_auc_im = roc_auc_score(gt_list, np.max(segment_scores_flatten, axis=1))
@@ -335,22 +349,14 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
         det_image_scores_zero = np.array(det_image_scores_zero)
         det_image_scores_few = np.array(det_image_scores_few)
 
-        if det_image_scores_zero.max() > det_image_scores_zero.min():
-            det_image_scores_zero = (det_image_scores_zero - det_image_scores_zero.min()) / (det_image_scores_zero.max() - det_image_scores_zero.min())
-        else:
-            det_image_scores_zero = np.zeros_like(det_image_scores_zero)
-
-        if det_image_scores_few.max() > det_image_scores_few.min():
-            det_image_scores_few = (det_image_scores_few - det_image_scores_few.min()) / (det_image_scores_few.max() - det_image_scores_few.min())
-        else:
-            det_image_scores_few = np.zeros_like(det_image_scores_few)
-
+        det_image_scores_zero = (det_image_scores_zero - det_image_scores_zero.min()) / (det_image_scores_zero.max() - det_image_scores_zero.min())
+        det_image_scores_few = (det_image_scores_few - det_image_scores_few.min()) / (det_image_scores_few.max() - det_image_scores_few.min())
+    
         image_scores = 0.5 * det_image_scores_zero + 0.5 * det_image_scores_few
         img_roc_auc_det = roc_auc_score(gt_list, image_scores)
-        print(f'{args.obj} AUC : {round(img_roc_auc_det, 4)}')
+        print(f'{args.obj} AUC : {round(img_roc_auc_det,4)}')
 
         return img_roc_auc_det
-
 
 if __name__ == '__main__':
     main()
