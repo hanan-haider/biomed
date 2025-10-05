@@ -125,8 +125,7 @@ def main():
 
     # Loop through the test loader
     for (image, y, mask) in tqdm(test_loader, desc="Counting test data"):
-         batch_size = image.size(0)  # Number of samples in current batch
-    
+        batch_size = image.size(0)  # Number of samples in current batch
         total_images += batch_size
         total_masks += mask.size(0)
         total_gt += y.size(0)
@@ -135,7 +134,7 @@ def main():
     print(f"Total Images: {total_images}")
     print(f"Total Masks:  {total_masks}")
     print(f"Total Ground Truth (y): {total_gt}")
-    
+
 
     
 
@@ -158,8 +157,7 @@ def main():
 
     # Loop through the test loader
     for (image, y, mask) in tqdm(train_loader, desc="Counting test data"):
-         batch_size = image.size(0)  # Number of samples in current batch
-    
+        batch_size = image.size(0)  # Number of samples in current batch
         total_images += batch_size
         total_masks += mask.size(0)
         total_gt += y.size(0)
