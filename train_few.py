@@ -115,6 +115,29 @@ def main():
     dl_kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
     test_dataset = MedDataset(args.data_path, args.obj, args.img_size, args.shot, args.iterate)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, **dl_kwargs)
+    from tqdm import tqdm
+
+
+    # Initialize counters
+    total_images = 0
+    total_masks = 0
+    total_gt = 0
+
+    # Loop through the test loader
+    for (image, y, mask) in tqdm(test_loader, desc="Counting test data"):
+         batch_size = image.size(0)  # Number of samples in current batch
+    
+        total_images += batch_size
+        total_masks += mask.size(0)
+        total_gt += y.size(0)
+
+    print("\n📊 Dataset Summary:")
+    print(f"Total Images: {total_images}")
+    print(f"Total Masks:  {total_masks}")
+    print(f"Total Ground Truth (y): {total_gt}")
+    
+
+    
 
     # few-shot image augmentation (user-provided augment function expected)
     augment_abnorm_img, augment_abnorm_mask = augment(test_dataset.fewshot_abnorm_img, test_dataset.fewshot_abnorm_mask)
@@ -127,6 +150,29 @@ def main():
 
     train_dataset = torch.utils.data.TensorDataset(augment_fewshot_img, augment_fewshot_mask, augment_fewshot_label)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True, **dl_kwargs)
+
+    # Initialize counters
+    total_images = 0
+    total_masks = 0
+    total_gt = 0
+
+    # Loop through the test loader
+    for (image, y, mask) in tqdm(train_loader, desc="Counting test data"):
+         batch_size = image.size(0)  # Number of samples in current batch
+    
+        total_images += batch_size
+        total_masks += mask.size(0)
+        total_gt += y.size(0)
+
+    print("\n📊 Dataset Summary:")
+    print(f"Total Images: {total_images}")
+    print(f"Total Masks:  {total_masks}")
+    print(f"Total Ground Truth (y): {total_gt}")
+
+
+
+
+
 
     # memory bank construction (support set)
     support_dataset = torch.utils.data.TensorDataset(augment_normal_img)
@@ -229,7 +275,7 @@ def main():
                            ckp_path)
 
 
-                           
+
 def test(args, model, test_loader, text_features, seg_mem_features, det_mem_features):
     gt_list = []
     gt_mask_list = []
