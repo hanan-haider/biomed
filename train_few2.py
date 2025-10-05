@@ -356,4 +356,8 @@ def main():
                 print(f"Model saved to {ckp_path}")
 
     print(f"\n=== Training Complete ===")
-    print(f"Best Result: {best_result
+    print(f"Best Result: {best_result:.4f}")
+
+
+if __name__ == '__main__':
+    main()
