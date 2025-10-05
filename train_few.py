@@ -271,7 +271,6 @@ def main():
                 torch.save({'seg_adapters': model.seg_adapters.state_dict(),
                             'det_adapters': model.det_adapters.state_dict()},
                            ckp_path)
-
 def test(args, model, test_loader, text_features, seg_mem_features, det_mem_features):
     gt_list = []
     gt_mask_list = []
@@ -280,25 +279,34 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
     seg_score_map_zero = []
     seg_score_map_few = []
 
-    for (image, y, mask) in tqdm(test_loader):
+    for (image, y, mask) in tqdm(test_loader, desc="Testing"):
         image = image.to(device)
         mask[mask > 0.5], mask[mask <= 0.5] = 1, 0
+        
+        batch_size = image.shape[0]
 
         with torch.no_grad(), torch.cuda.amp.autocast():
             _, seg_patch_tokens, det_patch_tokens = model(image)
-            seg_patch_tokens = [p[0, 1:, :] for p in seg_patch_tokens]
-            det_patch_tokens = [p[0, 1:, :] for p in det_patch_tokens]
+            # Keep batch dimension for processing
+            seg_patch_tokens_batch = [p[:, 1:, :] for p in seg_patch_tokens]
+            det_patch_tokens_batch = [p[:, 1:, :] for p in det_patch_tokens]
 
+        # Process each image in the batch individually
+        for i in range(batch_size):
+            # Extract single image tokens
+            seg_patch_tokens = [p[i] for p in seg_patch_tokens_batch]
+            det_patch_tokens = [p[i] for p in det_patch_tokens_batch]
+            
             if CLASS_INDEX[args.obj] > 0:
                 # SEGMENTATION BRANCH - Liver (CLASS_INDEX = 2)
                 
                 # few-shot, seg head
                 anomaly_maps_few_shot = []
                 for idx, p in enumerate(seg_patch_tokens):
-                    cos = cos_sim(seg_mem_features[idx], p)
+                    cos = cos_sim(seg_mem_features[idx], p.unsqueeze(0))
                     height = int(np.sqrt(cos.shape[1]))
                     anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
-                    anomaly_map_few_shot = F.interpolate(torch.tensor(anomaly_map_few_shot),
+                    anomaly_map_few_shot = F.interpolate(anomaly_map_few_shot,
                                                             size=args.img_size, mode='bilinear', align_corners=True)
                     anomaly_maps_few_shot.append(anomaly_map_few_shot[0].cpu().numpy())
                 score_map_few = np.sum(anomaly_maps_few_shot, axis=0)
@@ -307,8 +315,8 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 # zero-shot, seg head
                 anomaly_maps = []
                 for layer in range(len(seg_patch_tokens)):
-                    seg_patch_tokens[layer] /= seg_patch_tokens[layer].norm(dim=-1, keepdim=True)
-                    anomaly_map = (100.0 * seg_patch_tokens[layer] @ text_features).unsqueeze(0)
+                    p_norm = seg_patch_tokens[layer] / seg_patch_tokens[layer].norm(dim=-1, keepdim=True)
+                    anomaly_map = (100.0 * p_norm @ text_features).unsqueeze(0)
                     B, L, C = anomaly_map.shape
                     H = int(np.sqrt(L))
                     anomaly_map = F.interpolate(anomaly_map.permute(0, 2, 1).view(B, 2, H, H),
@@ -318,12 +326,12 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 score_map_zero = np.sum(anomaly_maps, axis=0)
                 seg_score_map_zero.append(score_map_zero)
 
-                # Collect ground truth ONLY in segmentation branch
-                mask_np = mask.squeeze().cpu().detach().numpy()
+                # Collect ground truth for this specific image
+                mask_np = mask[i].squeeze().cpu().detach().numpy()
                 while mask_np.ndim > 2:
                     mask_np = mask_np[0]
                 gt_mask_list.append(mask_np)
-                gt_list.extend(y.cpu().detach().numpy())
+                gt_list.append(y[i].item())
 
             else:
                 # DETECTION BRANCH - Chest, Histopathology (CLASS_INDEX < 0)
@@ -331,10 +339,10 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 # few-shot, det head
                 anomaly_maps_few_shot = []
                 for idx, p in enumerate(det_patch_tokens):
-                    cos = cos_sim(det_mem_features[idx], p)
+                    cos = cos_sim(det_mem_features[idx], p.unsqueeze(0))
                     height = int(np.sqrt(cos.shape[1]))
                     anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
-                    anomaly_map_few_shot = F.interpolate(torch.tensor(anomaly_map_few_shot),
+                    anomaly_map_few_shot = F.interpolate(anomaly_map_few_shot,
                                                             size=args.img_size, mode='bilinear', align_corners=True)
                     anomaly_maps_few_shot.append(anomaly_map_few_shot[0].cpu().numpy())
                 anomaly_map_few_shot = np.sum(anomaly_maps_few_shot, axis=0)
@@ -344,14 +352,14 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 # zero-shot, det head
                 anomaly_score = 0
                 for layer in range(len(det_patch_tokens)):
-                    det_patch_tokens[layer] /= det_patch_tokens[layer].norm(dim=-1, keepdim=True)
-                    anomaly_map = (100.0 * det_patch_tokens[layer] @ text_features).unsqueeze(0)
+                    p_norm = det_patch_tokens[layer] / det_patch_tokens[layer].norm(dim=-1, keepdim=True)
+                    anomaly_map = (100.0 * p_norm @ text_features).unsqueeze(0)
                     anomaly_map = torch.softmax(anomaly_map, dim=-1)[:, :, 1]
                     anomaly_score += anomaly_map.mean()
-                det_image_scores_zero.append(anomaly_score.cpu().numpy())
+                det_image_scores_zero.append(anomaly_score.cpu().item())
 
-                # Collect ground truth ONLY in detection branch
-                gt_list.extend(y.cpu().detach().numpy())
+                # Collect ground truth for this specific image
+                gt_list.append(y[i].item())
 
     gt_list = np.array(gt_list)
     print(f"\nCollected {len(gt_list)} ground truth labels")
@@ -394,10 +402,10 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
 
         # Image-level AUC
         segment_scores_flatten = segment_scores.reshape(segment_scores.shape[0], -1)
-        print(f"segment_scores_flatten shape: {segment_scores_flatten.shape}, gt_list shape: {gt_list.shape}")
         
-        # Ensure same number of samples
-        assert len(segment_scores_flatten) == len(gt_list), f"Mismatch: {len(segment_scores_flatten)} scores vs {len(gt_list)} labels"
+        # Verify counts match
+        assert len(segment_scores_flatten) == len(gt_list), \
+            f"Mismatch: {len(segment_scores_flatten)} scores vs {len(gt_list)} labels"
         
         roc_auc_im = roc_auc_score(gt_list, np.max(segment_scores_flatten, axis=1))
         print(f'{args.obj} AUC : {round(roc_auc_im, 4)}')
@@ -418,8 +426,9 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
 
         image_scores = 0.5 * det_image_scores_zero + 0.5 * det_image_scores_few
         
-        # Ensure same number of samples
-        assert len(image_scores) == len(gt_list), f"Mismatch: {len(image_scores)} scores vs {len(gt_list)} labels"
+        # Verify counts match
+        assert len(image_scores) == len(gt_list), \
+            f"Mismatch: {len(image_scores)} scores vs {len(gt_list)} labels"
         
         img_roc_auc_det = roc_auc_score(gt_list, image_scores)
         print(f'{args.obj} AUC : {round(img_roc_auc_det, 4)}')
