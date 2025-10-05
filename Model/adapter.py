@@ -55,21 +55,11 @@ class BiomedClipAdapter(nn.Module):
         y = self.fc2(x)
         return x, y
 
-
 class BiomedCLIP_Inplanted(nn.Module):
     """
     BiomedCLIP with implanted adapters for segmentation and detection tasks.
-    
-    Key differences from standard CLIP adapter:
-    1. Handles timm-based Vision Transformer (if using timm model)
-    2. Adapts to BiomedCLIP's feature dimensions (768 for ViT-B/16)
-    3. Works with both custom VisionTransformer and TimmModel
-    4. Supports ImageNet-pretrained initialization
-    
-    Reference: Zhang et al. "BiomedCLIP" (2023)
-    Paper: https://arxiv.org/abs/2303.00915
     """
-    def __init__(self, biomedclip_model, features, feature_dim=768):
+    def __init__(self, biomedclip_model, features, feature_dim=768, embed_dim=512):
         """
         Initialize BiomedCLIP with adapters.
         
@@ -77,12 +67,14 @@ class BiomedCLIP_Inplanted(nn.Module):
             biomedclip_model: The BiomedCLIP model
             features: List of layer indices to extract features from (e.g., [3, 6, 9, 12])
             feature_dim: Feature dimension from vision encoder (768 for ViT-B/16)
+            embed_dim: Shared embedding dimension (512 for BiomedCLIP)
         """
         super().__init__()
         self.clipmodel = biomedclip_model
         self.image_encoder = biomedclip_model.visual
         self.features = features
         self.feature_dim = feature_dim
+        self.embed_dim = embed_dim
         
         # Check if using timm model or custom VisionTransformer
         self.is_timm_model = hasattr(self.image_encoder, 'trunk')
@@ -95,22 +87,30 @@ class BiomedCLIP_Inplanted(nn.Module):
         self.det_adapters = nn.ModuleList(
             [BiomedClipAdapter(feature_dim, bottleneck=768) for i in range(len(features))]
         )
+        
+        # ✅ ADD PROJECTION LAYERS: Project from bottleneck (768) to embed_dim (512)
+        # This aligns vision features with text features in shared embedding space
+        self.seg_projections = nn.ModuleList([
+            nn.Linear(768, embed_dim, bias=False) for _ in range(len(features))
+        ])
+        self.det_projections = nn.ModuleList([
+            nn.Linear(768, embed_dim, bias=False) for _ in range(len(features))
+        ])
+        
+        # Initialize projections
+        for proj in self.seg_projections:
+            nn.init.normal_(proj.weight, std=0.01)
+        for proj in self.det_projections:
+            nn.init.normal_(proj.weight, std=0.01)
     
     def forward_timm(self, x):
-        """
-        Forward pass for timm-based BiomedCLIP model.
-        
-        Timm models have different internal structure, so we need
-        to handle feature extraction differently.
-        """
-        # Get trunk (the Vision Transformer)
+        """Forward pass for timm-based BiomedCLIP model."""
         trunk = self.image_encoder.trunk
         
         # Patch embedding
         if hasattr(trunk, 'patch_embed'):
             x = trunk.patch_embed(x)
         else:
-            # Fallback for different timm versions
             x = trunk.conv_proj(x) if hasattr(trunk, 'conv_proj') else trunk.stem(x)
             x = x.flatten(2).transpose(1, 2)
         
@@ -128,7 +128,6 @@ class BiomedCLIP_Inplanted(nn.Module):
         # Process through transformer blocks with adapters
         seg_patch_tokens = []
         det_patch_tokens = []
-        attn_out = []
         
         blocks = trunk.blocks if hasattr(trunk, 'blocks') else trunk.layers
         
@@ -137,35 +136,33 @@ class BiomedCLIP_Inplanted(nn.Module):
             
             # Extract features at specified layers
             if (i + 1) in self.features:
-                seg_adapt_med, seg_adapt_out = self.seg_adapters[self.features.index(i+1)](x)
-                det_adapt_med, det_adapt_out = self.det_adapters[self.features.index(i+1)](x)
+                idx = self.features.index(i + 1)
+                seg_adapt_med, seg_adapt_out = self.seg_adapters[idx](x)
+                det_adapt_med, det_adapt_out = self.det_adapters[idx](x)
                 
                 # Residual connection with adapters
                 x = 0.8 * x + 0.1 * seg_adapt_out + 0.1 * det_adapt_out
                 
-                seg_patch_tokens.append(seg_adapt_med)
-                det_patch_tokens.append(det_adapt_med)
+                # ✅ PROJECT TO EMBED_DIM (512)
+                seg_adapt_med_proj = self.seg_projections[idx](seg_adapt_med)
+                det_adapt_med_proj = self.det_projections[idx](det_adapt_med)
+                
+                seg_patch_tokens.append(seg_adapt_med_proj)
+                det_patch_tokens.append(det_adapt_med_proj)
         
         # Apply final norm
         if hasattr(trunk, 'norm'):
             x = trunk.norm(x)
         
-        # Extract CLS token
+        # Extract CLS token and project
         pooled = x[:, 0]
-        
-        # Apply projection
         pooled = self.image_encoder.head_drop(pooled)
         pooled = self.image_encoder.proj(pooled)
         
         return pooled, seg_patch_tokens, det_patch_tokens
     
     def forward_custom_vit(self, x):
-        """
-        Forward pass for custom VisionTransformer implementation.
-        
-        This handles the case where BiomedCLIP uses the custom
-        VisionTransformer class instead of timm.
-        """
+        """Forward pass for custom VisionTransformer implementation."""
         # Patch embedding
         if self.image_encoder.input_patchnorm:
             x = x.reshape(x.shape[0], x.shape[1], self.image_encoder.grid_size[0], 
@@ -201,7 +198,7 @@ class BiomedCLIP_Inplanted(nn.Module):
         num_blocks = len(self.image_encoder.transformer.resblocks)
         
         for i in range(num_blocks):
-            if i + 1 == num_blocks:  # Last block, get attention
+            if i + 1 == num_blocks:
                 x, attn = self.image_encoder.transformer.resblocks[i](x, attn_mask=None)
                 attn_out.append(attn)
             else:
@@ -209,22 +206,19 @@ class BiomedCLIP_Inplanted(nn.Module):
             
             # Apply adapters at specified layers
             if (i + 1) in self.features:
-                seg_adapt_med, seg_adapt_out = self.seg_adapters[self.features.index(i+1)](x)
-                det_adapt_med, det_adapt_out = self.det_adapters[self.features.index(i+1)](x)
+                idx = self.features.index(i + 1)
+                seg_adapt_med, seg_adapt_out = self.seg_adapters[idx](x)
+                det_adapt_med, det_adapt_out = self.det_adapters[idx](x)
                 
                 # Residual connection with adapters
                 x = 0.8 * x + 0.1 * seg_adapt_out + 0.1 * det_adapt_out
                 
-                seg_patch_tokens.append(seg_adapt_med)
-                det_patch_tokens.append(det_adapt_med)
-        
-        # Compute attention visualization
-        if attn_out:
-            B, C, L = attn_out[0].shape
-            H = int(math.sqrt(L - 1))
-            out_attn = torch.zeros([H, H]).to(x.device)
-            for attn in attn_out:
-                out_attn = out_attn + attn[0, 0, 1:].view(H, H)
+                # ✅ PROJECT TO EMBED_DIM (512)
+                seg_adapt_med_proj = self.seg_projections[idx](seg_adapt_med)
+                det_adapt_med_proj = self.det_projections[idx](det_adapt_med)
+                
+                seg_patch_tokens.append(seg_adapt_med_proj)
+                det_patch_tokens.append(det_adapt_med_proj)
         
         # Permute back
         x = x.permute(1, 0, 2)  # LND -> NLD
@@ -241,20 +235,15 @@ class BiomedCLIP_Inplanted(nn.Module):
         return pooled, seg_patch_tokens, det_patch_tokens
     
     def forward(self, x):
-        """
-        Forward pass through BiomedCLIP with adapters.
-        
-        Automatically detects whether using timm or custom VisionTransformer
-        and routes to appropriate forward function.
-        """
+        """Forward pass through BiomedCLIP with adapters."""
         if self.is_timm_model:
             return self.forward_timm(x)
         else:
             return self.forward_custom_vit(x)
 
 
-# Helper function to create BiomedCLIP with adapters
-def create_biomedclip_with_adapters(biomedclip_model, features=[3, 6, 9, 12], feature_dim=768):
+            
+def create_biomedclip_with_adapters(biomedclip_model, features=[3, 6, 9, 12], feature_dim=768, embed_dim=512):
     """
     Create BiomedCLIP model with adapters for downstream tasks.
     
@@ -262,12 +251,6 @@ def create_biomedclip_with_adapters(biomedclip_model, features=[3, 6, 9, 12], fe
         biomedclip_model: Pretrained BiomedCLIP model
         features: List of layer indices to extract and adapt
         feature_dim: Feature dimension (768 for ViT-B/16)
-    
-    Returns:
-        BiomedCLIP model with implanted adapters
-    
-    Example:
-        >>> model = create_biomedclip_model(...)
-        >>> adapted_model = create_biomedclip_with_adapters(model, features=[3, 6, 9, 12])
+        embed_dim: Shared embedding dimension (512 for BiomedCLIP)
     """
-    return BiomedCLIP_Inplanted(biomedclip_model, features, feature_dim)
+    return BiomedCLIP_Inplanted(biomedclip_model, features, feature_dim, embed_dim)

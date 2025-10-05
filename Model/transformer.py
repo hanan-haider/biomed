@@ -453,7 +453,7 @@ class TimmModel(nn.Module):
     def __init__(
         self,
         model_name: str = 'vit_base_patch16_224',
-        embed_dim: int = 512,
+        embed_dim: int = 768,
         image_size: Union[Tuple[int, int], int] = 224,
         pool: str = '',
         proj: str = 'linear',
