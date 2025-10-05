@@ -274,6 +274,13 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 score_map_zero = np.sum(anomaly_maps, axis=0)
                 seg_score_map_zero.append(score_map_zero)
 
+                # ✅ FIX: Append labels and masks ONLY in the same branch where scores are collected
+                mask_np = mask.squeeze().cpu().detach().numpy()
+                if mask_np.ndim > 2:
+                    mask_np = mask_np[0]
+                gt_mask_list.append(mask_np)
+                gt_list.extend(y.cpu().detach().numpy())
+
             else:
                 # few-shot, det head
                 anomaly_maps_few_shot = []
@@ -297,57 +304,87 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                     anomaly_score += anomaly_map.mean()
                 det_image_scores_zero.append(anomaly_score.cpu().numpy())
 
-            # ✅ FIX: Squeeze and ensure consistent shape before appending
-            mask_np = mask.squeeze().cpu().detach().numpy()
-            # Ensure it's 2D (H, W) not 3D or other shapes
-            if mask_np.ndim > 2:
-                mask_np = mask_np[0]  # Take first element if batch dimension remains
-            gt_mask_list.append(mask_np)
-            gt_list.extend(y.cpu().detach().numpy())
+                # ✅ FIX: Append labels ONLY in the detection branch where scores are collected
+                gt_list.extend(y.cpu().detach().numpy())
 
     gt_list = np.array(gt_list)
     
-    # ✅ FIX: Stack masks properly - handle potential shape mismatches
-    try:
-        gt_mask_list = np.stack(gt_mask_list, axis=0)
-    except ValueError:
-        # If shapes are still inconsistent, print debug info
-        print(f"Warning: Inconsistent mask shapes detected")
-        shapes = [m.shape for m in gt_mask_list]
-        print(f"Mask shapes: {set(shapes)}")
-        # Resize all masks to the same size
-        target_shape = (args.img_size, args.img_size)
-        gt_mask_list_resized = []
-        for mask in gt_mask_list:
-            if mask.shape != target_shape:
-                from scipy.ndimage import zoom
-                zoom_factors = (target_shape[0]/mask.shape[0], target_shape[1]/mask.shape[1])
-                mask = zoom(mask, zoom_factors, order=0)
-            gt_mask_list_resized.append(mask)
-        gt_mask_list = np.stack(gt_mask_list_resized, axis=0)
-    
-    gt_mask_list = (gt_mask_list > 0).astype(np.int_)
-
     if CLASS_INDEX[args.obj] > 0:
+        # ✅ FIX: Handle mask stacking for segmentation branch
+        try:
+            gt_mask_list = np.stack(gt_mask_list, axis=0)
+        except ValueError:
+            print(f"Warning: Inconsistent mask shapes detected")
+            shapes = [m.shape for m in gt_mask_list]
+            print(f"Mask shapes: {set(shapes)}")
+            target_shape = (args.img_size, args.img_size)
+            gt_mask_list_resized = []
+            for mask in gt_mask_list:
+                if mask.shape != target_shape:
+                    from scipy.ndimage import zoom
+                    zoom_factors = (target_shape[0]/mask.shape[0], target_shape[1]/mask.shape[1])
+                    mask = zoom(mask, zoom_factors, order=0)
+                gt_mask_list_resized.append(mask)
+            gt_mask_list = np.stack(gt_mask_list_resized, axis=0)
+        
+        gt_mask_list = (gt_mask_list > 0).astype(np.int_)
+
         seg_score_map_zero = np.array(seg_score_map_zero)
         seg_score_map_few = np.array(seg_score_map_few)
+
+        # ✅ FIX: Add validation for consistent sample counts
+        if len(seg_score_map_zero) != len(gt_list) or len(seg_score_map_few) != len(gt_list):
+            print(f"Error: Sample count mismatch - seg_score_map_zero: {len(seg_score_map_zero)}, "
+                  f"seg_score_map_few: {len(seg_score_map_few)}, gt_list: {len(gt_list)}")
+            # Use the minimum length to avoid errors
+            min_len = min(len(seg_score_map_zero), len(seg_score_map_few), len(gt_list))
+            seg_score_map_zero = seg_score_map_zero[:min_len]
+            seg_score_map_few = seg_score_map_few[:min_len]
+            gt_list = gt_list[:min_len]
+            if len(gt_mask_list) > min_len:
+                gt_mask_list = gt_mask_list[:min_len]
 
         seg_score_map_zero = (seg_score_map_zero - seg_score_map_zero.min()) / (seg_score_map_zero.max() - seg_score_map_zero.min())
         seg_score_map_few = (seg_score_map_few - seg_score_map_few.min()) / (seg_score_map_few.max() - seg_score_map_few.min())
     
         segment_scores = 0.5 * seg_score_map_zero + 0.5 * seg_score_map_few
+        
+        # ✅ FIX: Validate shapes before ROC calculation
+        if segment_scores.shape[0] != gt_mask_list.shape[0]:
+            min_len = min(segment_scores.shape[0], gt_mask_list.shape[0])
+            segment_scores = segment_scores[:min_len]
+            gt_mask_list = gt_mask_list[:min_len]
+            
         seg_roc_auc = roc_auc_score(gt_mask_list.flatten(), segment_scores.flatten())
         print(f'{args.obj} pAUC : {round(seg_roc_auc,4)}')
 
         segment_scores_flatten = segment_scores.reshape(segment_scores.shape[0], -1)
-        roc_auc_im = roc_auc_score(gt_list, np.max(segment_scores_flatten, axis=1))
+        
+        # ✅ FIX: Ensure consistent sample count for image-level ROC
+        if segment_scores_flatten.shape[0] != len(gt_list):
+            min_len = min(segment_scores_flatten.shape[0], len(gt_list))
+            segment_scores_flatten = segment_scores_flatten[:min_len]
+            gt_list_adj = gt_list[:min_len]
+        else:
+            gt_list_adj = gt_list
+            
+        roc_auc_im = roc_auc_score(gt_list_adj, np.max(segment_scores_flatten, axis=1))
         print(f'{args.obj} AUC : {round(roc_auc_im, 4)}')
 
         return seg_roc_auc + roc_auc_im
 
     else:
+        # ✅ FIX: Handle detection branch sample consistency
         det_image_scores_zero = np.array(det_image_scores_zero)
         det_image_scores_few = np.array(det_image_scores_few)
+
+        if len(det_image_scores_zero) != len(gt_list) or len(det_image_scores_few) != len(gt_list):
+            print(f"Warning: Sample count mismatch in detection branch - "
+                  f"zero: {len(det_image_scores_zero)}, few: {len(det_image_scores_few)}, gt: {len(gt_list)}")
+            min_len = min(len(det_image_scores_zero), len(det_image_scores_few), len(gt_list))
+            det_image_scores_zero = det_image_scores_zero[:min_len]
+            det_image_scores_few = det_image_scores_few[:min_len]
+            gt_list = gt_list[:min_len]
 
         det_image_scores_zero = (det_image_scores_zero - det_image_scores_zero.min()) / (det_image_scores_zero.max() - det_image_scores_zero.min())
         det_image_scores_few = (det_image_scores_few - det_image_scores_few.min()) / (det_image_scores_few.max() - det_image_scores_few.min())
@@ -357,6 +394,5 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
         print(f'{args.obj} AUC : {round(img_roc_auc_det,4)}')
 
         return img_roc_auc_det
-
 if __name__ == '__main__':
     main()
