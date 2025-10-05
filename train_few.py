@@ -272,7 +272,6 @@ def main():
                             'det_adapters': model.det_adapters.state_dict()},
                            ckp_path)
 
-
 def test(args, model, test_loader, text_features, seg_mem_features, det_mem_features):
     gt_list = []
     gt_mask_list = []
@@ -291,6 +290,8 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
             det_patch_tokens = [p[0, 1:, :] for p in det_patch_tokens]
 
             if CLASS_INDEX[args.obj] > 0:
+                # SEGMENTATION BRANCH - Liver (CLASS_INDEX = 2)
+                
                 # few-shot, seg head
                 anomaly_maps_few_shot = []
                 for idx, p in enumerate(seg_patch_tokens):
@@ -317,7 +318,16 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 score_map_zero = np.sum(anomaly_maps, axis=0)
                 seg_score_map_zero.append(score_map_zero)
 
+                # Collect ground truth ONLY in segmentation branch
+                mask_np = mask.squeeze().cpu().detach().numpy()
+                while mask_np.ndim > 2:
+                    mask_np = mask_np[0]
+                gt_mask_list.append(mask_np)
+                gt_list.extend(y.cpu().detach().numpy())
+
             else:
+                # DETECTION BRANCH - Chest, Histopathology (CLASS_INDEX < 0)
+                
                 # few-shot, det head
                 anomaly_maps_few_shot = []
                 for idx, p in enumerate(det_patch_tokens):
@@ -340,65 +350,80 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                     anomaly_score += anomaly_map.mean()
                 det_image_scores_zero.append(anomaly_score.cpu().numpy())
 
-            # FIX: Properly handle mask shape - ensure it's always 2D
-            mask_np = mask.squeeze().cpu().detach().numpy()
-            # If still has batch dimension, take first element
-            while mask_np.ndim > 2:
-                mask_np = mask_np[0]
-            gt_mask_list.append(mask_np)
-            gt_list.extend(y.cpu().detach().numpy())
+                # Collect ground truth ONLY in detection branch
+                gt_list.extend(y.cpu().detach().numpy())
 
     gt_list = np.array(gt_list)
-    
-    # FIX: Stack masks with proper shape handling
-    try:
-        gt_mask_list = np.stack(gt_mask_list, axis=0)
-    except ValueError as e:
-        print(f"Warning: Inconsistent mask shapes - {e}")
-        # Resize all masks to target shape
-        target_shape = (args.img_size, args.img_size)
-        gt_mask_list_resized = []
-        for mask in gt_mask_list:
-            if mask.shape != target_shape:
-                from scipy.ndimage import zoom
-                zoom_factors = (target_shape[0]/mask.shape[0], target_shape[1]/mask.shape[1])
-                mask = zoom(mask, zoom_factors, order=0)
-            gt_mask_list_resized.append(mask)
-        gt_mask_list = np.stack(gt_mask_list_resized, axis=0)
-    
-    gt_mask_list = (gt_mask_list > 0).astype(np.int_)
+    print(f"\nCollected {len(gt_list)} ground truth labels")
 
     if CLASS_INDEX[args.obj] > 0:
+        # SEGMENTATION EVALUATION
+        print(f"Collected {len(gt_mask_list)} masks")
+        print(f"Collected {len(seg_score_map_zero)} zero-shot scores")
+        print(f"Collected {len(seg_score_map_few)} few-shot scores")
+        
+        # Stack masks with proper shape handling
+        try:
+            gt_mask_list = np.stack(gt_mask_list, axis=0)
+        except ValueError as e:
+            print(f"Warning: Inconsistent mask shapes - {e}")
+            target_shape = (args.img_size, args.img_size)
+            gt_mask_list_resized = []
+            for mask in gt_mask_list:
+                if mask.shape != target_shape:
+                    from scipy.ndimage import zoom
+                    zoom_factors = (target_shape[0]/mask.shape[0], target_shape[1]/mask.shape[1])
+                    mask = zoom(mask, zoom_factors, order=0)
+                gt_mask_list_resized.append(mask)
+            gt_mask_list = np.stack(gt_mask_list_resized, axis=0)
+        
+        gt_mask_list = (gt_mask_list > 0).astype(np.int_)
+
         seg_score_map_zero = np.array(seg_score_map_zero)
         seg_score_map_few = np.array(seg_score_map_few)
 
-        # Add small epsilon to avoid division by zero
+        # Normalize with epsilon to avoid division by zero
         seg_score_map_zero = (seg_score_map_zero - seg_score_map_zero.min()) / (seg_score_map_zero.max() - seg_score_map_zero.min() + 1e-8)
         seg_score_map_few = (seg_score_map_few - seg_score_map_few.min()) / (seg_score_map_few.max() - seg_score_map_few.min() + 1e-8)
 
         segment_scores = 0.5 * seg_score_map_zero + 0.5 * seg_score_map_few
+        
+        # Pixel-level AUC
         seg_roc_auc = roc_auc_score(gt_mask_list.flatten(), segment_scores.flatten())
         print(f'{args.obj} pAUC : {round(seg_roc_auc, 4)}')
 
+        # Image-level AUC
         segment_scores_flatten = segment_scores.reshape(segment_scores.shape[0], -1)
+        print(f"segment_scores_flatten shape: {segment_scores_flatten.shape}, gt_list shape: {gt_list.shape}")
+        
+        # Ensure same number of samples
+        assert len(segment_scores_flatten) == len(gt_list), f"Mismatch: {len(segment_scores_flatten)} scores vs {len(gt_list)} labels"
+        
         roc_auc_im = roc_auc_score(gt_list, np.max(segment_scores_flatten, axis=1))
         print(f'{args.obj} AUC : {round(roc_auc_im, 4)}')
 
         return seg_roc_auc + roc_auc_im
 
     else:
+        # DETECTION EVALUATION
+        print(f"Collected {len(det_image_scores_zero)} zero-shot scores")
+        print(f"Collected {len(det_image_scores_few)} few-shot scores")
+        
         det_image_scores_zero = np.array(det_image_scores_zero)
         det_image_scores_few = np.array(det_image_scores_few)
 
-        # Add small epsilon to avoid division by zero
+        # Normalize with epsilon to avoid division by zero
         det_image_scores_zero = (det_image_scores_zero - det_image_scores_zero.min()) / (det_image_scores_zero.max() - det_image_scores_zero.min() + 1e-8)
         det_image_scores_few = (det_image_scores_few - det_image_scores_few.min()) / (det_image_scores_few.max() - det_image_scores_few.min() + 1e-8)
 
         image_scores = 0.5 * det_image_scores_zero + 0.5 * det_image_scores_few
+        
+        # Ensure same number of samples
+        assert len(image_scores) == len(gt_list), f"Mismatch: {len(image_scores)} scores vs {len(gt_list)} labels"
+        
         img_roc_auc_det = roc_auc_score(gt_list, image_scores)
         print(f'{args.obj} AUC : {round(img_roc_auc_det, 4)}')
 
         return img_roc_auc_det
-
 if __name__ == '__main__':
     main()
