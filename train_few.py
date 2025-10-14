@@ -254,7 +254,7 @@ def main():
         det_features = []
         for image in support_loader:
             image = image[0].to(device)
-            with torch.no_grad():
+            with torch.no_grad(), torch.cuda.amp.autocast():
                 _, seg_patch_tokens, det_patch_tokens = model(image)
                 seg_patch_tokens = [p[0].contiguous() for p in seg_patch_tokens]
                 det_patch_tokens = [p[0].contiguous() for p in det_patch_tokens]
