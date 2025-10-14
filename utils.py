@@ -3,15 +3,12 @@ import torch
 import torch.nn.functional as F
 import kornia as K
 
-from transformers import AutoTokenizer
+#from transformers import AutoTokenizer
 
-# Initialize tokenizer (do this once, globally)
+
 tokenizer = AutoTokenizer.from_pretrained(
     "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract",
-    trust_remote_code=True,
-    use_fast=True,
-    # Explicitly ignore chat templates
-    chat_template=None
+    use_fast=False  # This prevents the chat template lookup
 )
 
 def encode_text_with_prompt_ensemble(model, obj, device):
