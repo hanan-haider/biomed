@@ -17,8 +17,7 @@ from loss import FocalLoss, BinaryDiceLoss
 from prompt import REAL_NAME
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["TRANSFORMERS_NO_ADDITIONAL_CHAT_TEMPLATES"] = "1"
+
 
 
 
@@ -77,6 +76,8 @@ def parse_args():
 
 
 def main():
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+    os.environ["TRANSFORMERS_NO_ADDITIONAL_CHAT_TEMPLATES"] = "1"
     args = parse_args()
 
     # Save args in global_vars and globals for convenience
