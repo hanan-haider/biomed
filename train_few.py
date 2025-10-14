@@ -17,6 +17,9 @@ from loss import FocalLoss, BinaryDiceLoss
 from prompt import REAL_NAME
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["TRANSFORMERS_NO_ADDITIONAL_CHAT_TEMPLATES"] = "1"
+
 
 
 warnings.filterwarnings("ignore")
