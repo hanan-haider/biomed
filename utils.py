@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import kornia as K
 
-#from transformers import AutoTokenizer
+from transformers import AutoTokenizer
 
 
 tokenizer = AutoTokenizer.from_pretrained(
