@@ -357,6 +357,10 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
             
 
     gt_list = np.array(gt_list)
+    mask_shapes = [m.shape for m in gt_mask_list]
+    unique_shapes = set(mask_shapes)
+    print("Unique mask shapes:", unique_shapes)
+
     gt_mask_list = np.asarray(gt_mask_list)
     gt_mask_list = (gt_mask_list>0).astype(np.int_)
 
