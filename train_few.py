@@ -276,6 +276,9 @@ def main():
                 torch.save({'seg_adapters': model.seg_adapters.state_dict(),
                             'det_adapters': model.det_adapters.state_dict()},
                            ckp_path)
+
+
+                           
 def test(args, model, test_loader, text_features, seg_mem_features, det_mem_features):
     gt_list = []
     gt_mask_list = []
