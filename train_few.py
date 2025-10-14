@@ -307,7 +307,7 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 # few-shot, seg head
                 anomaly_maps_few_shot = []
                 for idx, p in enumerate(seg_patch_tokens):
-                    cos = cos_sim(seg_mem_features[idx], p.unsqueeze(0))
+                    cos = cos_sim(seg_mem_features[idx], p)
                     height = int(np.sqrt(cos.shape[1]))
                     anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
                     anomaly_map_few_shot = F.interpolate(anomaly_map_few_shot,
@@ -343,7 +343,7 @@ def test(args, model, test_loader, text_features, seg_mem_features, det_mem_feat
                 # few-shot, det head
                 anomaly_maps_few_shot = []
                 for idx, p in enumerate(det_patch_tokens):
-                    cos = cos_sim(det_mem_features[idx], p.unsqueeze(0))
+                    cos = cos_sim(det_mem_features[idx], p)
                     height = int(np.sqrt(cos.shape[1]))
                     anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
                     anomaly_map_few_shot = F.interpolate(anomaly_map_few_shot,
