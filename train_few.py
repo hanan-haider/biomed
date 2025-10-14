@@ -188,6 +188,7 @@ def main():
     # text prompt features
     with torch.cuda.amp.autocast(), torch.no_grad():
         text_features = encode_text_with_prompt_ensemble(model, REAL_NAME[args.obj], device)
+        text_features = text_features.to(dtype=torch.float16) # convert to float16 to save memory
 
     best_result = 0.0
 
