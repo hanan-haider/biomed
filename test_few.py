@@ -124,7 +124,7 @@ def main():
     best_result = 0.0
 
 
-        seg_features = []
+    seg_features = []
     det_features = []
     for image in support_loader:
         image = image[0].to(device)
