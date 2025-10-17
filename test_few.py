@@ -102,12 +102,12 @@ def main():
     augment_fewshot_label = torch.cat([torch.Tensor([1] * len(augment_abnorm_img)), torch.Tensor([0] * len(augment_normal_img))], dim=0)
 
     train_dataset = torch.utils.data.TensorDataset(augment_fewshot_img, augment_fewshot_mask, augment_fewshot_label)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True, **kwargs)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True, **dl_kwargs)
 
 
     # memory bank construction
     support_dataset = torch.utils.data.TensorDataset(augment_normal_img)
-    support_loader = torch.utils.data.DataLoader(support_dataset, batch_size=1, shuffle=True, **kwargs)
+    support_loader = torch.utils.data.DataLoader(support_dataset, batch_size=1, shuffle=True, **dl_kwargs)
 
 
     # losses
