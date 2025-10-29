@@ -233,7 +233,7 @@ def main():
     
     # Concatenate memory features
     mem_features = [torch.cat(mem_features[i], dim=0).to(device) for i in range(4)]
-    print(f"✅ Memory bank built with {len(support_images)} samples\n")
+    print(f"✅ Memory bank built with {len(support_loader)} samples\n")
 
     # Test
     print("Running inference on test set...")
