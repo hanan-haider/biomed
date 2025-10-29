@@ -6,9 +6,11 @@ import kornia as K
 from transformers import AutoTokenizer
 
 
+# Replace it with:
 tokenizer = AutoTokenizer.from_pretrained(
     "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract",
-    use_fast=False  # This prevents the chat template lookup
+    use_fast=False,
+    trust_remote_code=True
 )
 
 def encode_text_with_prompt_ensemble(model, obj, device):
