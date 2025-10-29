@@ -1,0 +1,484 @@
+import os
+import warnings
+import random
+import argparse
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+from Model.biomedclip import create_model
+from Model.transformer import TimmModel , HFTextEncoder
+from Model.adapter import BiomedCLIP_Inplanted
+from dataset.medical_few import MedDataset
+from utils import augment, cos_sim, encode_text_with_prompt_ensemble
+from sklearn.metrics import roc_auc_score, precision_recall_curve, pairwise
+from loss import FocalLoss, BinaryDiceLoss
+from prompt import REAL_NAME
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+
+
+warnings.filterwarnings("ignore")
+
+# Device
+use_cuda = torch.cuda.is_available()
+device = torch.device("cuda:0" if use_cuda else "cpu")
+
+# Biomed datasets indexing (you can keep as is if relevant for your task)
+CLASS_INDEX = {'Brain': 3, 'Liver': 2, 'Retina_RESC': 1, 'Retina_OCT2017': -1, 'Chest': -2, 'Histopathology': -3}
+CLASS_INDEX_INV = {v: k for k, v in CLASS_INDEX.items()}
+
+# Global container for convenience (if you need later)
+global_vars = {}
+
+def setup_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='BiomedCLIP Testing')
+    # General defaults
+    parser.add_argument('--model_name', type=str, default='BiomedCLIP-PubMedBERT-ViT-B-16',
+                        help="BiomedCLIP model version")    
+    parser.add_argument('--text_encoder', type=str, default='microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext',
+                        help="Text encoder used for BiomedCLIP" )
+
+    parser.add_argument('--pretrain', type=str, default='microsoft',
+                            help="pretrained checkpoint source")
+    parser.add_argument('--obj', type=str, default='Liver')
+    parser.add_argument('--data_path', type=str, default='./data/',
+                        help="path to dataset"  )
+    #parser.add_argument('--data_path', type=str, default='/kaggle/input/preprocessed/Liver')
+
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--save_model', type=int, default=1)
+    parser.add_argument('--save_path', type=str, default='./ckpt/few-shot/')
+    parser.add_argument('--img_size', type=int, default=224, 
+                        help="BiomedCLIP trained with 224x224 resolution")
+    parser.add_argument("--epoch", type=int, default=50)
+    parser.add_argument("--learning_rate", type=float, default=0.001)
+    parser.add_argument("--features_list", type=int, nargs="+", default=[3, 6, 9, 12],
+                        help="layer features used for adapters")    
+    parser.add_argument('--seed', type=int, default=111)
+    parser.add_argument('--shot', type=int, default=4)
+    parser.add_argument('--iterate', type=int, default=0)
+    args, _ = parser.parse_known_args()
+
+    return args
+
+
+def main():
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+    os.environ["TRANSFORMERS_NO_ADDITIONAL_CHAT_TEMPLATES"] = "1"
+    args = parse_args()
+
+    # Save args in global_vars and globals for convenience
+    global_vars.update(vars(args))
+    global_vars['args'] = args
+    for k, v in global_vars.items():
+        globals()[k] = v
+
+    # Print device and parsed args (optional)
+    print(f"Using device: {device}")
+    print("Parsed arguments:")
+    for k, v in vars(args).items():
+        print(f"  {k}: {v}")
+
+    # set seed
+    setup_seed(args.seed)
+
+    # ============ ADDED: Create log file ============
+    log_dir = '/kaggle/working'
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f'training_log_{args.obj}.txt')
+    
+    with open(log_file, 'w') as f:
+        f.write(f"Training Log for {args.obj}\n")
+        f.write(f"Model: {args.model_name}\n")
+        f.write(f"Learning Rate: {args.learning_rate}\n")
+        f.write(f"Batch Size: {args.batch_size}\n")
+        f.write(f"Shot: {args.shot}\n")
+        f.write(f"Seed: {args.seed}\n")
+        f.write("="*60 + "\n\n")
+    # ============ END ADDED ============
+
+    # ---- Prepare models (user must implement / provide these functions/classes) ----
+    # create_model, CLIP_Inplanted, MedDataset, augment, encode_text_with_prompt_ensemble,
+    # REAL_NAME, FocalLoss, BinaryDiceLoss, cos_sim must be available in the environment.
+
+    # fixed feature extractor (clip_model)
+    biomedclip_model = create_model(model_name=args.model_name, img_size=args.img_size, device=device,
+                              pretrained=args.pretrain, require_pretrained=True)
+    biomedclip_model.eval()
+
+    model = BiomedCLIP_Inplanted(biomedclip_model=biomedclip_model, features=args.features_list).to(device)
+    model.eval()
+
+    # make sure adapter params require grad (we'll optimize adapters)
+    for name, param in model.named_parameters():
+        param.requires_grad = True
+
+    # optimizer for only adapters
+    seg_optimizer = torch.optim.Adam(list(model.seg_adapters.parameters()), lr=args.learning_rate, betas=(0.5, 0.999))
+    det_optimizer = torch.optim.Adam(list(model.det_adapters.parameters()), lr=args.learning_rate, betas=(0.5, 0.999))
+
+    # load test dataset
+    dl_kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
+    test_dataset = MedDataset(args.data_path, args.obj, args.img_size, args.shot, args.iterate)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, **dl_kwargs)
+    from tqdm import tqdm
+
+
+    # Initialize counters
+    total_images = 0
+    total_masks = 0
+    total_gt = 0
+
+    # Loop through the test loader
+    for (image, y, mask) in tqdm(test_loader, desc="Counting test data"):
+        batch_size = image.size(0)  # Number of samples in current batch
+        total_images += batch_size
+        total_masks += mask.size(0)
+        total_gt += y.size(0)
+
+    print("\n📊 Dataset Summary:")
+    print(f"Total Images: {total_images}")
+    print(f"Total Masks:  {total_masks}")
+    print(f"Total Ground Truth (y): {total_gt}")
+
+
+    
+
+    # few-shot image augmentation (user-provided augment function expected)
+    augment_abnorm_img, augment_abnorm_mask = augment(test_dataset.fewshot_abnorm_img, test_dataset.fewshot_abnorm_mask)
+    augment_normal_img, augment_normal_mask = augment(test_dataset.fewshot_norm_img)
+
+    augment_fewshot_img = torch.cat([augment_abnorm_img, augment_normal_img], dim=0)
+    augment_fewshot_mask = torch.cat([augment_abnorm_mask, augment_normal_mask], dim=0)
+
+    augment_fewshot_label = torch.cat([torch.Tensor([1] * len(augment_abnorm_img)), torch.Tensor([0] * len(augment_normal_img))], dim=0)
+
+    train_dataset = torch.utils.data.TensorDataset(augment_fewshot_img, augment_fewshot_mask, augment_fewshot_label)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=True, **dl_kwargs)
+
+    # Initialize counters
+    total_images = 0
+    total_masks = 0
+    total_gt = 0
+
+    # Loop through the test loader
+    for (image, y, mask) in tqdm(train_loader, desc="Counting test data"):
+        batch_size = image.size(0)  # Number of samples in current batch
+        total_images += batch_size
+        total_masks += mask.size(0)
+        total_gt += y.size(0)
+
+    print("\n📊 Dataset Summary:")
+    print(f"Total Images: {total_images}")
+    print(f"Total Masks:  {total_masks}")
+    print(f"Total Ground Truth (y): {total_gt}")
+
+
+
+
+
+
+    # memory bank construction (support set)
+    support_dataset = torch.utils.data.TensorDataset(augment_normal_img)
+    support_loader = torch.utils.data.DataLoader(support_dataset, batch_size=1, shuffle=True, **dl_kwargs)
+
+    # losses (user must provide these classes / functions)
+    loss_focal = FocalLoss()
+    loss_dice = BinaryDiceLoss()
+    loss_bce = torch.nn.BCEWithLogitsLoss()
+
+    # text prompt features
+    with torch.cuda.amp.autocast(), torch.no_grad():
+        text_features = encode_text_with_prompt_ensemble(model, REAL_NAME[args.obj], device)
+        text_features = text_features.to(dtype=torch.float16) # convert to float16 to save memory
+
+    best_result = 0.0
+
+    for epoch in range(args.epoch):
+        print('epoch ', epoch, ':')
+
+        loss_list = []
+        model.train()
+        for (image, gt, label) in train_loader:
+            image = image.to(device)
+            with torch.cuda.amp.autocast():
+                _, seg_patch_tokens, det_patch_tokens = model(image)
+                # Convert tokens to expected shapes
+                seg_patch_tokens = [p[0, 1:, :] for p in seg_patch_tokens]
+                det_patch_tokens = [p[0, 1:, :] for p in det_patch_tokens]
+
+                # detection loss
+                det_loss = 0.0
+                image_label = label.to(device)
+                for layer in range(len(det_patch_tokens)):
+                    det_patch_tokens[layer] = det_patch_tokens[layer] / det_patch_tokens[layer].norm(dim=-1, keepdim=True)
+                    anomaly_map = (100.0 * det_patch_tokens[layer] @ text_features).unsqueeze(0)
+                    anomaly_map = torch.softmax(anomaly_map, dim=-1)[:, :, 1]
+                    anomaly_score = torch.mean(anomaly_map, dim=-1)
+                    det_loss += loss_bce(anomaly_score, image_label)
+
+                if CLASS_INDEX[args.obj] > 0:
+                    # pixel level segmentation loss
+                    seg_loss = 0.0
+                    mask = gt.squeeze(0).to(device)
+                    mask[mask > 0.5], mask[mask <= 0.5] = 1, 0
+                    for layer in range(len(seg_patch_tokens)):
+                        seg_patch_tokens[layer] = seg_patch_tokens[layer] / seg_patch_tokens[layer].norm(dim=-1, keepdim=True)
+                        anomaly_map = (100.0 * seg_patch_tokens[layer] @ text_features).unsqueeze(0)
+                        B, L, C = anomaly_map.shape
+                        H = int(np.sqrt(L))
+                        anomaly_map = F.interpolate(anomaly_map.permute(0, 2, 1).view(B, 2, H, H),
+                                                    size=args.img_size, mode='bilinear', align_corners=True)
+                        anomaly_map = torch.softmax(anomaly_map, dim=1)
+                        seg_loss += loss_focal(anomaly_map, mask)
+                        seg_loss += loss_dice(anomaly_map[:, 1, :, :], mask)
+
+                    loss = seg_loss + det_loss
+                    loss.requires_grad_(True)
+                    seg_optimizer.zero_grad()
+                    det_optimizer.zero_grad()
+                    loss.backward()
+                    seg_optimizer.step()
+                    det_optimizer.step()
+                else:
+                    loss = det_loss
+                    loss.requires_grad_(True)
+                    det_optimizer.zero_grad()
+                    loss.backward()
+                    det_optimizer.step()
+
+                loss_list.append(loss.item())
+
+        # ============ ADDED: Calculate average loss ============
+        avg_loss = np.mean(loss_list)
+        print("Loss: ", avg_loss)
+        # ============ END ADDED ============
+
+        # Build memory bank features from support loader
+        model.eval()
+        seg_features = []
+        det_features = []
+        for image in support_loader:
+            image = image[0].to(device)
+            with torch.no_grad(), torch.cuda.amp.autocast():
+                _, seg_patch_tokens, det_patch_tokens = model(image)
+                seg_patch_tokens = [p[0].contiguous() for p in seg_patch_tokens]
+                det_patch_tokens = [p[0].contiguous() for p in det_patch_tokens]
+                seg_features.append(seg_patch_tokens)
+                det_features.append(det_patch_tokens)
+
+        seg_mem_features = [torch.cat([seg_features[j][i] for j in range(len(seg_features))], dim=0) for i in range(len(seg_features[0]))]
+        det_mem_features = [torch.cat([det_features[j][i] for j in range(len(det_features))], dim=0) for i in range(len(det_features[0]))]
+
+        # Evaluate on test set (user-provided test function expected)
+        # ============ MODIFIED: Capture metrics ============
+        result, metrics = test(args, model, test_loader, text_features, seg_mem_features, det_mem_features)
+        
+        # Write to log file
+        with open(log_file, 'a') as f:
+            f.write(f"Epoch {epoch}:\n")
+            f.write(f"  Loss: {avg_loss:.6f}\n")
+            if CLASS_INDEX[args.obj] > 0:
+                f.write(f"  pAUC: {metrics['pauc']:.4f}\n")
+                f.write(f"  AUC: {metrics['auc']:.4f}\n")
+            else:
+                f.write(f"  AUC: {metrics['auc']:.4f}\n")
+            f.write("\n")
+        # ============ END MODIFIED ============
+        
+        if result > best_result:
+            best_result = result
+            print("Best result:", best_result)
+            
+            # ============ ADDED: Log best result ============
+            with open(log_file, 'a') as f:
+                f.write(f"*** New Best Result: {best_result:.4f} at Epoch {epoch} ***\n\n")
+            # ============ END ADDED ============
+            
+            if args.save_model == 1:
+                os.makedirs(args.save_path, exist_ok=True)
+                ckp_path = os.path.join(args.save_path, f'{args.obj}.pth')
+                torch.save({'seg_adapters': model.seg_adapters.state_dict(),
+                            'det_adapters': model.det_adapters.state_dict()},
+                           ckp_path)
+
+    # ============ ADDED: Write final summary ============
+    with open(log_file, 'a') as f:
+        f.write("="*60 + "\n")
+        f.write(f"Training Completed\n")
+        f.write(f"Best Result: {best_result:.4f}\n")
+        f.write("="*60 + "\n")
+    
+    print(f"\n✅ Training log saved to: {log_file}")
+    # ============ END ADDED ============
+
+
+                           
+def test(args, model, test_loader, text_features, seg_mem_features, det_mem_features):
+    gt_list = []
+    gt_mask_list = []
+
+    det_image_scores_zero = []
+    det_image_scores_few = []
+    
+    seg_score_map_zero = []
+    seg_score_map_few = []
+
+    for (image, y, mask) in tqdm(test_loader):
+        image = image.to(device)
+        mask[mask > 0.5], mask[mask <= 0.5] = 1, 0
+
+        # Process each item in the batch separately
+        batch_size = image.shape[0]
+        
+        for i in range(batch_size):
+            single_image = image[i:i+1]  # Keep batch dimension
+            single_y = y[i]
+            single_mask = mask[i]
+            
+            with torch.no_grad(), torch.cuda.amp.autocast():
+                _, seg_patch_tokens, det_patch_tokens = model(single_image)
+                seg_patch_tokens = [p[0, 1:, :] for p in seg_patch_tokens]
+                det_patch_tokens = [p[0, 1:, :] for p in det_patch_tokens]
+
+                if CLASS_INDEX[args.obj] > 0:
+                    # few-shot, seg head
+                    anomaly_maps_few_shot = []
+                    for idx, p in enumerate(seg_patch_tokens):
+                        cos = cos_sim(seg_mem_features[idx], p)
+                        height = int(np.sqrt(cos.shape[1]))
+                        anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
+                        anomaly_map_few_shot = F.interpolate(torch.tensor(anomaly_map_few_shot),
+                                                                size=args.img_size, mode='bilinear', align_corners=True)
+                        anomaly_maps_few_shot.append(anomaly_map_few_shot[0].cpu().numpy())
+                    score_map_few = np.sum(anomaly_maps_few_shot, axis=0)
+                    seg_score_map_few.append(score_map_few)
+
+                    # zero-shot, seg head
+                    anomaly_maps = []
+                    for layer in range(len(seg_patch_tokens)):
+                        seg_patch_tokens[layer] /= seg_patch_tokens[layer].norm(dim=-1, keepdim=True)
+                        anomaly_map = (100.0 * seg_patch_tokens[layer] @ text_features).unsqueeze(0)
+                        B, L, C = anomaly_map.shape
+                        H = int(np.sqrt(L))
+                        anomaly_map = F.interpolate(anomaly_map.permute(0, 2, 1).view(B, 2, H, H),
+                                                    size=args.img_size, mode='bilinear', align_corners=True)
+                        anomaly_map = torch.softmax(anomaly_map, dim=1)[:, 1, :, :]
+                        anomaly_maps.append(anomaly_map.cpu().numpy())
+                    score_map_zero = np.sum(anomaly_maps, axis=0)
+                    seg_score_map_zero.append(score_map_zero)
+
+                else:
+                    # few-shot, det head
+                    anomaly_maps_few_shot = []
+                    for idx, p in enumerate(det_patch_tokens):
+                        cos = cos_sim(det_mem_features[idx], p)
+                        height = int(np.sqrt(cos.shape[1]))
+                        anomaly_map_few_shot = torch.min((1 - cos), 0)[0].reshape(1, 1, height, height)
+                        anomaly_map_few_shot = F.interpolate(torch.tensor(anomaly_map_few_shot),
+                                                                size=args.img_size, mode='bilinear', align_corners=True)
+                        anomaly_maps_few_shot.append(anomaly_map_few_shot[0].cpu().numpy())
+                    anomaly_map_few_shot = np.sum(anomaly_maps_few_shot, axis=0)
+                    score_few_det = anomaly_map_few_shot.mean()
+                    det_image_scores_few.append(score_few_det)
+
+                    # zero-shot, det head
+                    anomaly_score = 0
+                    for layer in range(len(det_patch_tokens)):
+                        det_patch_tokens[layer] /= det_patch_tokens[layer].norm(dim=-1, keepdim=True)
+                        anomaly_map = (100.0 * det_patch_tokens[layer] @ text_features).unsqueeze(0)
+                        anomaly_map = torch.softmax(anomaly_map, dim=-1)[:, :, 1]
+                        anomaly_score += anomaly_map.mean()
+                    det_image_scores_zero.append(anomaly_score.cpu().numpy())
+
+                # Append individual items
+                gt_mask_list.append(single_mask.cpu().detach().numpy())
+                gt_list.append(single_y.cpu().detach().numpy())
+
+    # Rest of the function remains the same
+    gt_list = np.array(gt_list)
+    gt_mask_list = np.array(gt_mask_list)  # Now all masks have same shape
+    gt_mask_list = (gt_mask_list > 0).astype(np.int_)
+
+    # ... rest of your code
+
+    if CLASS_INDEX[args.obj] > 0:
+
+        seg_score_map_zero = np.array(seg_score_map_zero)
+        seg_score_map_few = np.array(seg_score_map_few)
+
+        seg_score_map_zero = (seg_score_map_zero - seg_score_map_zero.min()) / (seg_score_map_zero.max() - seg_score_map_zero.min())
+        seg_score_map_few = (seg_score_map_few - seg_score_map_few.min()) / (seg_score_map_few.max() - seg_score_map_few.min())
+    
+        segment_scores = 0.5 * seg_score_map_zero + 0.5 * seg_score_map_few
+        seg_roc_auc = roc_auc_score(gt_mask_list.flatten(), segment_scores.flatten())
+        print(f'{args.obj} pAUC : {round(seg_roc_auc,4)}')
+
+        segment_scores_flatten = segment_scores.reshape(segment_scores.shape[0], -1)
+        roc_auc_im = roc_auc_score(gt_list, np.max(segment_scores_flatten, axis=1))
+        print(f'{args.obj} AUC : {round(roc_auc_im, 4)}')
+
+        # ============ ADDED: Return metrics ============
+        metrics = {'pauc': seg_roc_auc, 'auc': roc_auc_im}
+        return seg_roc_auc + roc_auc_im, metrics
+        # ============ END ADDED ============
+
+    else:
+
+        det_image_scores_zero = np.array(det_image_scores_zero)
+        det_image_scores_few = np.array(det_image_scores_few)
+
+        det_image_scores_zero = (det_image_scores_zero - det_image_scores_zero.min()) / (det_image_scores_zero.max() - det_image_scores_zero.min())
+        det_image_scores_few = (det_image_scores_few - det_image_scores_few.min()) / (det_image_scores_few.max() - det_image_scores_few.min())
+    
+        image_scores = 0.5 * det_image_scores_zero + 0.5 * det_image_scores_few
+        img_roc_auc_det = roc_auc_score(gt_list, image_scores)
+        print(f'{args.obj} AUC : {round(img_roc_auc_det,4)}')
+
+        # ============ ADDED: Return metrics ============
+        metrics = {'auc': img_roc_auc_det}
+        return img_roc_auc_det, metrics
+        # ============ END ADDED ============
+
+
+if __name__ == '__main__':
+    main()
+
+
+'''
+
+## Summary of Changes:
+
+**Only 4 small additions were made:**
+
+1. **Lines 73-82**: Create log file at `/kaggle/working/training_log_{obj}.txt` with header
+2. **Lines 219-220**: Store average loss in variable
+3. **Lines 243-254**: Write epoch, loss, AUC, pAUC to log file + log best results
+4. **Lines 268-273**: Write final summary when training completes
+5. **Lines 364, 381**: Modified `test()` function to return metrics dictionary along with result
+
+The log file will contain:
+
+Epoch 0:
+  Loss: 0.123456
+  pAUC: 0.8234
+  AUC: 0.9012
+
+Epoch 1:
+  Loss: 0.098765
+  pAUC: 0.8456
+  AUC: 0.9123
+
+'''
