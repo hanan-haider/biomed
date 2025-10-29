@@ -36,14 +36,21 @@ def setup_seed(seed):
 
 
 
-
 def extract_features(model, image, device):
     """
     Extract multi-scale features from BiomedCLIP vision encoder.
-    Returns features from multiple layers.
+    Returns features from multiple layers, projected to 512-dim.
     """
     # Get the vision encoder
     vision_encoder = model.visual
+    
+    # Get the projection layer (768 -> 512)
+    # BiomedCLIP uses a linear projection from ViT output to embed_dim
+    proj_layer = None
+    if hasattr(vision_encoder, 'proj'):
+        proj_layer = vision_encoder.proj
+    elif hasattr(vision_encoder, 'head'):
+        proj_layer = vision_encoder.head.proj if hasattr(vision_encoder.head, 'proj') else vision_encoder.head
     
     # Process image through vision encoder
     with torch.no_grad():
@@ -76,7 +83,20 @@ def extract_features(model, image, device):
                 x = block(x)
                 if (i + 1) in [3, 6, 9, 12]:  # Extract at these layers
                     # Remove CLS token, keep only patch tokens
-                    patch_features = x[:, 1:, :]  # [B, num_patches, dim]
+                    patch_features = x[:, 1:, :]  # [B, num_patches, 768]
+                    
+                    # Project to 512-dim if projection layer exists
+                    if proj_layer is not None:
+                        # Reshape for projection: [B, num_patches, 768] -> [B*num_patches, 768]
+                        B, N, C = patch_features.shape
+                        patch_features_flat = patch_features.reshape(B * N, C)
+                        
+                        # Project: [B*num_patches, 768] -> [B*num_patches, 512]
+                        patch_features_proj = proj_layer(patch_features_flat)
+                        
+                        # Reshape back: [B*num_patches, 512] -> [B, num_patches, 512]
+                        patch_features = patch_features_proj.reshape(B, N, -1)
+                    
                     layer_features.append(patch_features)
             
             return layer_features
@@ -120,7 +140,20 @@ def extract_features(model, image, device):
                 if (i + 1) in [3, 6, 9, 12]:  # Extract at these layers
                     # Permute back and remove CLS token
                     x_temp = x.permute(1, 0, 2)  # LND -> NLD
-                    patch_features = x_temp[:, 1:, :]  # Remove CLS token
+                    patch_features = x_temp[:, 1:, :]  # Remove CLS token [B, num_patches, 768]
+                    
+                    # Project to 512-dim if projection layer exists
+                    if proj_layer is not None:
+                        # Reshape for projection
+                        B, N, C = patch_features.shape
+                        patch_features_flat = patch_features.reshape(B * N, C)
+                        
+                        # Project: [B*num_patches, 768] -> [B*num_patches, 512]
+                        patch_features_proj = proj_layer(patch_features_flat)
+                        
+                        # Reshape back: [B*num_patches, 512] -> [B, num_patches, 512]
+                        patch_features = patch_features_proj.reshape(B, N, -1)
+                    
                     layer_features.append(patch_features)
             
             return layer_features
