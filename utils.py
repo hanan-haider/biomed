@@ -10,7 +10,9 @@ from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(
     "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract",
     use_fast=False,
-    trust_remote_code=True
+    trust_remote_code=True,
+    skip_chat_template=True
+    
 )
 
 def encode_text_with_prompt_ensemble(model, obj, device):
