@@ -133,7 +133,7 @@ def main():
     dl_kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
     test_dataset = MedDataset(args.data_path, args.obj, args.img_size, args.shot, args.iterate)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, **dl_kwargs)
-    from tqdm import tqdm
+
 
 
     # Initialize counters

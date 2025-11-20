@@ -439,6 +439,9 @@ class VisionTransformer(nn.Module):
             return pooled, patch_tokens
 
         return pooled, patch_tokens
+
+
+        
 class TimmModel(nn.Module):
     """
     Timm-based Vision Transformer for BiomedCLIP.
