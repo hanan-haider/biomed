@@ -181,7 +181,7 @@ def main():
         wrapper = ModelWrapper(biomedclip_model)
         text_features = encode_text_with_prompt_ensemble(wrapper, REAL_NAME[args.obj], device)
         text_features = text_features.to(dtype=torch.float16)
-    print(f"✅ Text features generated: {text_features.shape}\n")
+    print(f" Text features generated: {text_features.shape}\n")
 
     # Build memory bank from support set (few-shot examples)
     print("Building memory bank from support set...")
@@ -200,7 +200,7 @@ def main():
     
     # Concatenate memory features
     mem_features = [torch.cat(mem_features[i], dim=0).to(device) for i in range(4)]
-    print(f"✅ Memory bank built with {len(support_images)} samples\n")
+    print(f" Memory bank built with {len(support_images)} samples\n")
 
     # Test
     print("Running inference on test set...")

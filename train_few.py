@@ -268,7 +268,7 @@ def main():
         result = test(args, model, test_loader, text_features, seg_mem_features, det_mem_features)
         if result > best_result:
             best_result = result
-            print("Best result:", best_result)
+            print("Best result \n" )
             if args.save_model == 1:
                 os.makedirs(args.save_path, exist_ok=True)
                 ckp_path = os.path.join(args.save_path, f'{args.obj}.pth')
